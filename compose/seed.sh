@@ -123,7 +123,16 @@ log "jarvis-config-service app_key captured (length=${#CFG_APP_KEY})"
 # Belt-and-suspenders fakes registration. If config-service's POST /services
 # rejects (e.g., duplicate), don't fail the whole seed — CC still has the
 # legacy env-var fallback URLs in v2.3.
-register_service "jarvis-llm-proxy-api" "host.docker.internal" 7705 || \
+#
+# The llm-proxy target is parameterized: the fast lane leaves it at the host
+# fake (host.docker.internal:7705); the behavior lane (T6b) points discovery at
+# the REAL llm-proxy API container (LLM_PROXY_HOST=jarvis-llm-proxy-api,
+# LLM_PROXY_PORT=7704) so CC routes through the real ChatGPTOpenAI path. CC's
+# config-service discovery takes precedence over the env fallback, so this row —
+# not the JARVIS_LLM_PROXY_API_URL env — is what CC actually uses.
+LLM_PROXY_HOST="${LLM_PROXY_HOST:-host.docker.internal}"
+LLM_PROXY_PORT="${LLM_PROXY_PORT:-7705}"
+register_service "jarvis-llm-proxy-api" "$LLM_PROXY_HOST" "$LLM_PROXY_PORT" || \
   log "WARN llm-proxy registration failed (continuing — CC falls back to env)"
 register_service "jarvis-whisper-api" "host.docker.internal" 7706 || \
   log "WARN whisper registration failed (continuing — CC falls back to env)"

@@ -1,0 +1,103 @@
+# compose/ci-overlays/llm-proxy-behavior.yaml
+#
+# The BEHAVIOR lane overlay (T6b). Layered on top of docker-compose.ci.yaml's
+# `core` profile to swap the fake LLM for a REAL llm-proxy pointed at a cheap
+# cloud model (gpt-4.1-nano via the REST backend), so command-center's real
+# ChatGPTOpenAI provider makes genuine tool-routing decisions. whisper + tts stay
+# faked — only the LLM goes real (tool routing never touches STT/TTS).
+#
+# Used by .github/workflows/behavior-corpus.yml (nightly + on-demand), NOT the PR
+# fast lane. Brought up with:
+#   docker compose -f docker-compose.ci.yaml -f compose/ci-overlays/llm-proxy-behavior.yaml \
+#       --profile core --profile behavior up -d --wait ...
+#
+# Two llm-proxy processes from one CPU image (jarvis-llm-proxy-api has no GPU here
+# — the REST backend is just an HTTP client, and model_manager imports backends
+# lazily so vllm/torch are never loaded):
+#   * jarvis-llm-proxy-model :7705 — the model service (owns the REST backend,
+#     serves /internal/model/chat). live == background == one shared REST instance.
+#   * jarvis-llm-proxy-api   :7704 — the stateless OpenAI-compatible API CC calls
+#     at /v1/chat/completions (app-auth); proxies to the model service.
+#
+# OPENAI_API_KEY is injected from the workflow env into JARVIS_REST_AUTH_TOKEN.
+
+name: jarvis-ci
+
+services:
+  jarvis-llm-proxy-model:
+    # dev-cpu tag is published on push to main from alexberardi/jarvis-llm-proxy-api
+    # (.github/workflows/docker-build-push.yml, Dockerfile.cpu, linux/amd64).
+    image: ghcr.io/alexberardi/jarvis-llm-proxy-api:dev-cpu
+    profiles: ["behavior"]
+    # The image declares no CMD (run.sh is the host entrypoint); start the model
+    # service directly. WORKDIR is /app, so services.model_service:app resolves.
+    command: ["python", "-m", "uvicorn", "services.model_service:app", "--host", "0.0.0.0", "--port", "7705"]
+    environment:
+      # ---- live = REST -> OpenAI gpt-4.1-nano (model_manager reads these env
+      # fallbacks when no settings DB is present; settings_helpers.get_setting
+      # falls back cleanly, so no Postgres is needed for chat tool-routing) ----
+      JARVIS_LIVE_MODEL_BACKEND: REST
+      JARVIS_LIVE_MODEL_NAME: gpt-4.1-nano-2025-04-14
+      JARVIS_LIVE_REST_MODEL_URL: https://api.openai.com
+      JARVIS_REST_PROVIDER: openai
+      JARVIS_REST_REQUEST_FORMAT: openai
+      JARVIS_REST_AUTH_TYPE: bearer
+      # rest_backend reads the token straight from this env var.
+      JARVIS_REST_AUTH_TOKEN: ${OPENAI_API_KEY}
+      # rest_backend also honours JARVIS_REST_MODEL_NAME as an explicit override;
+      # set it to the same pinned snapshot belt-and-suspenders.
+      JARVIS_REST_MODEL_NAME: gpt-4.1-nano-2025-04-14
+      # Internal-token guard for /internal/model/* — must match the API server.
+      MODEL_SERVICE_TOKEN: ci-internal-token
+      # Placeholders so the import chain (settings/pipeline routes resolve an auth
+      # URL at module import; db session wants a valid URL) doesn't crash. Neither
+      # Postgres nor auth is actually called on the chat path.
+      JARVIS_AUTH_BASE_URL: http://jarvis-auth:8000
+      DATABASE_URL: "sqlite:////tmp/llmproxy.db"
+      PYTHONUNBUFFERED: "1"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:7705/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 20s
+
+  jarvis-llm-proxy-api:
+    image: ghcr.io/alexberardi/jarvis-llm-proxy-api:dev-cpu
+    profiles: ["behavior"]
+    command: ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7704"]
+    depends_on:
+      jarvis-llm-proxy-model:
+        condition: service_healthy
+    environment:
+      # The API server proxies /v1/chat/completions -> model service.
+      MODEL_SERVICE_URL: http://jarvis-llm-proxy-model:7705
+      MODEL_SERVICE_TOKEN: ci-internal-token
+      LLM_PROXY_INTERNAL_TOKEN: ci-internal-token
+      # require_app_auth forwards the CALLER's (CC's) X-Jarvis-App-Id/Key to
+      # jarvis-auth /internal/app-ping; it needs only the auth base URL, not its
+      # own creds. CC's seeded `command-center` app-key validates here.
+      JARVIS_AUTH_BASE_URL: http://jarvis-auth:8000
+      DATABASE_URL: "sqlite:////tmp/llmproxy.db"
+      PYTHONUNBUFFERED: "1"
+    ports:
+      # Exposed for debugging a failed run from the runner host; CC reaches it
+      # over the compose network by service name, not this mapping.
+      - "7704:7704"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:7704/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 20s
+
+  # Repoint command-center at the REAL proxy's API server (port 7704) instead of
+  # the fake LLM (host.docker.internal:7705). Merge-only override — the base
+  # service's `core` profile, image, and other env are inherited.
+  jarvis-command-center:
+    environment:
+      JARVIS_LLM_PROXY_API_URL: http://jarvis-llm-proxy-api:7704

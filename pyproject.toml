@@ -5,4 +5,5 @@
 [tool.pytest.ini_options]
 markers = [
     "qa_case(id): map this test to a QA plan case (e.g. CASE-001). The id is exported to JUnit XML for the integration-runner to join against the QA plan.",
+    "behavior: behavior-lane test that routes a voice corpus through CC's real ChatGPTOpenAI provider against a real cloud model (needs the behavior stack + OPENAI_API_KEY). Run by the behavior-corpus workflow, not the PR fast lane.",
 ]
