@@ -218,8 +218,11 @@ jobs:
       - name: Tail service logs on failure
         if: ${{ failure() && env.HAS_KEY == 'true' }}
         run: |
-          echo "=== CC logs (tail) ==="
-          docker compose -f docker-compose.ci.yaml logs --tail=120 jarvis-command-center || true
+          # Full CC log (not a tail) — the corpus runs ~30 conversations and an
+          # early failure scrolls off a short tail. The stack is small, so dump
+          # all of it for diagnosis.
+          echo "=== CC logs (full) ==="
+          docker compose -f docker-compose.ci.yaml logs jarvis-command-center || true
           echo "=== llm-proxy API logs (tail) ==="
           docker compose -f docker-compose.ci.yaml \
             -f compose/ci-overlays/llm-proxy-behavior.yaml \

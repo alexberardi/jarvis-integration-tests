@@ -15,7 +15,7 @@
 # fictional stand-in toolset). The translation is NOT cosmetic:
 #   set_alarm   -> reminder (action=set)        ; no real set_alarm exists
 #   get_time    -> get_current_time
-#   duration_minutes -> duration_seconds (x60)  ; device -> device_name
+#   duration_minutes -> duration_seconds (x60)
 #   add_to_list -> shopping_list / todo_list (items[] / tasks[])
 # Package tools (get_weather/get_news/play_music) are replaced with built-ins
 # (calculate, convert_measurement, more list/reminder utterances).
@@ -94,30 +94,11 @@
   args:
     location: {contains: "tokyo"}
 
-# --- control_device --- (real arg is `device_name`; action is an enum)
-- utterance: "turn off the kitchen lights"
-  tool: control_device
-  args:
-    device_name: {contains: "kitchen"}
-    action: {any_of: ["turn_off", "off"]}
-
-- utterance: "dim the bedroom lights to 50 percent"
-  tool: control_device
-  args:
-    device_name: {contains: "bedroom"}
-    action: {any_of: ["set_brightness", "brightness", "dim"]}
-
-- utterance: "turn on the living room lamp"
-  tool: control_device
-  args:
-    device_name: {contains: "living room"}
-    action: {any_of: ["turn_on", "on"]}
-
-- utterance: "set the thermostat to 72 degrees"
-  tool: control_device
-  args:
-    device_name: {contains: "thermostat"}
-    action: {any_of: ["set_temperature", "temperature"]}
+# NOTE: control_device is intentionally excluded — in the full CC stack it's a
+# multi-turn Home-Assistant flow (get_ha_entities -> control_device) that can't
+# resolve without HA node-context data, which CI lacks. See tools.cc.yaml. The
+# model's single-shot routing to it is already proven by the model-service
+# dry-run; the slots below test other built-ins single-shot instead.
 
 # --- shopping_list --- (real name; `items` is an array)
 - utterance: "add milk to my shopping list"
@@ -143,6 +124,12 @@
   args:
     action: {equals: read}
 
+- utterance: "remove milk from my shopping list"
+  tool: shopping_list
+  args:
+    action: {equals: remove}
+    items: {contains: "milk"}
+
 # --- todo_list --- (real name; `tasks` is an array; near-neighbour of shopping_list)
 - utterance: "add call the dentist to my to-do list"
   tool: todo_list
@@ -162,6 +149,11 @@
     action: {equals: add}
     tasks: {contains: "plants"}
 
+- utterance: "what's on my to-do list"
+  tool: todo_list
+  args:
+    action: {equals: read}
+
 # --- calculate --- (built-in; replaces a package tool; operation enum)
 - utterance: "what's 15 times 12"
   tool: calculate
@@ -178,8 +170,15 @@
   args:
     operation: {any_of: ["add"]}
 
+- utterance: "subtract 8 from 30"
+  tool: calculate
+  args:
+    operation: {any_of: ["subtract"]}
+
 # --- convert_measurement --- (built-in; replaces a package tool)
-- utterance: "how many cups are in a quart"
+# Phrase as explicit conversion COMMANDS, not "how many X in a Y" questions —
+# the latter read as general knowledge the model answers directly (no tool call).
+- utterance: "convert 2 quarts to cups"
   tool: convert_measurement
   args:
     from_unit: {any_of: ["quart", "cup"]}
@@ -190,6 +189,12 @@
   args:
     from_unit: {contains: "mile"}
     to_unit: {any_of: ["kilomet", "km"]}
+
+- utterance: "convert 3 pounds to ounces"
+  tool: convert_measurement
+  args:
+    from_unit: {any_of: ["pound", "ounce", "lb", "oz"]}
+    to_unit: {any_of: ["pound", "ounce", "lb", "oz"]}
 
 # --- negatives: small talk must NOT trigger a tool call ---
 - utterance: "hello there"

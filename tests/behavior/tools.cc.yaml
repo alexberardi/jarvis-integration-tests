@@ -89,45 +89,14 @@
           description: City, state, or country (e.g. "Tokyo", "London"). Omit for local time.
       required: []
 
-- type: function
-  function:
-    name: control_device
-    description: >-
-      Control a smart-home device: turn on/off, set brightness, set a thermostat
-      temperature, play/pause, lock/unlock. Use for any request to control a
-      physical device (lights, lamps, plugs, thermostat, locks, speakers).
-    parameters:
-      type: object
-      properties:
-        device_name:
-          type: string
-          description: Name of the device or room, e.g. "kitchen lights", "living room lamp", "thermostat".
-        action:
-          type: string
-          description: The action to perform.
-          enum:
-            [
-              turn_on,
-              turn_off,
-              play,
-              pause,
-              volume_up,
-              volume_down,
-              next,
-              previous,
-              lock,
-              unlock,
-              set_temperature,
-              set_mode,
-              set_brightness,
-              set_color,
-            ]
-        value:
-          type: string
-          description: >-
-            Value for the action: degrees for set_temperature (e.g. "72"),
-            percent for set_brightness (e.g. "50"), mode for set_mode.
-      required: [device_name, action]
+# NOTE: control_device is intentionally NOT in this CI corpus. The model routes
+# to it correctly (proven 29/29 in the model-service dry-run), but in the full CC
+# stack device control is a MULTI-TURN Home-Assistant flow: the enabled
+# `get_ha_entities` server tool instructs the model to resolve entity IDs first,
+# and CI has no HA data in the node context, so the flow can't resolve and ends in
+# stop_reason=error. A single-shot routing corpus can't test it without seeding HA
+# node-context data (a possible future multi-turn device test). See the behavior
+# lane's first CI run (2026-06-21): 26/30, the 4 fails were all control_device.
 
 - type: function
   function:
