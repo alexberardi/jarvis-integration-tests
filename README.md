@@ -3,8 +3,9 @@
 Cross-service integration **and** behavior test harness for the Jarvis ecosystem.
 A green per-service CI check only proves a repo's own units pass; this harness
 proves that the services **work together** — real auth/node credential
-round-trips, service discovery, tool-call parsing, MQTT publishes — and (next,
-T6b) that a real model **routes voice commands to the right tools**.
+round-trips, service discovery, tool-call parsing, MQTT publishes — and (T6b)
+that a real model **routes voice commands to the right tools** through
+command-center's real `ChatGPTOpenAI` provider.
 
 > Migrated 2026-06-21 from `jarvis-node-setup` (T6a). The runner, compose stack,
 > fakes, and CASE suite are a faithful lift; node-setup was an odd owner for an
@@ -53,12 +54,39 @@ key. Collapsing the phases breaks the credential chain.
 | Lane | Trigger | LLM/STT/TTS | Proves | Cost |
 |---|---|---|---|---|
 | **Fast** | every PR (hot-path repos) | host fakes (canned) | wiring + contracts: auth round-trips, discovery, MQTT, CC tool-call parsing | free, ~3–4 min |
-| **Behavior** *(T6b — not yet wired here)* | nightly + on-demand | llm-proxy `REST` → cheap cloud model (gpt-4.1-nano) via CC's real `ChatGPTOpenAI` provider | *does the feature actually work* — a voice-command corpus asserts utterances route to the correct tools with sensible args | pennies/run |
+| **Behavior** | nightly + on-demand ([`behavior-corpus.yml`](.github/workflows/behavior-corpus.yml)) | real **llm-proxy** `REST` → gpt-4.1-nano via CC's real `ChatGPTOpenAI` provider; whisper/tts stay faked | *does the feature actually work* — a voice-command corpus asserts utterances route to the correct **real CC tools** with sensible args | pennies/run |
 
-> The behavior corpus already exists, hardened and proven, in
-> `jarvis-llm-proxy-api/tests/manual/behavior/{corpus,tools}.yaml` (provider-agnostic
-> YAML, 30/30 live). **T6b** routes that same corpus through CC's real provider +
-> the full stack here, instead of llm-proxy's inlined stand-in toolset.
+> **The corpus is re-authored, not lifted, and targets BUILT-IN commands only.**
+> llm-proxy's behavior corpus (`tests/manual/behavior/`) routes against a
+> deliberately *fictional* stand-in toolset (`set_alarm` / `get_time` /
+> `play_music` / `add_to_list`). CC's **real** built-in tools differ in name *and*
+> argument shape (`reminder`, `get_current_time`, `shopping_list`/`todo_list`;
+> `duration_seconds` not `duration_minutes`; `device_name` not `device`). Optional
+> `jarvis-cmd-*` packages (weather / news / music) are **excluded** — a baseline
+> node may not have them, so they aren't a reliable CI signal; built-in
+> `calculate` + `convert_measurement` stand in their place. The lane ships its
+> **own** CC-targeted fixtures —
+> [`tests/behavior/tools.cc.yaml`](tests/behavior/tools.cc.yaml) (8 built-in tools,
+> transcribed from the real command sources) and
+> [`tests/behavior/corpus.cc.yaml`](tests/behavior/corpus.cc.yaml) (29 utterances) —
+> and routes them through CC's real native tool-calling path. Validated locally:
+> **29/29** vs pinned `gpt-4.1-nano-2025-04-14`.
+
+### Run the behavior lane
+
+`workflow_dispatch` (or nightly cron). It guard-no-ops until `OPENAI_API_KEY`
+(usage-capped) is set on this repo:
+
+```bash
+gh secret set OPENAI_API_KEY --repo alexberardi/jarvis-integration-tests
+gh workflow run behavior-corpus.yml --repo alexberardi/jarvis-integration-tests --ref main
+```
+
+It brings up the `core` stack + a real **llm-proxy** (`REST`→gpt-4.1-nano,
+`compose/ci-overlays/llm-proxy-behavior.yaml`), flips CC's `llm.interface` to
+`ChatGPTOpenAI`, and runs `tests/test_cc_behavior_corpus.py`. Locally with the
+key already on disk you can validate just the model-routing leg against the real
+model — see the dry-run notes in `prds/testing-infrastructure.md`.
 
 ## Run it standalone
 
@@ -86,14 +114,18 @@ compose/
   seed.sh                       # two-phase seed: app-keys + node-key + CI user
   postgres-init.sh              # creates jarvis_auth + jarvis_config DBs
   ci-overlays/                  # *-from-source.yaml — swap a service's :dev image for a PR build
+    llm-proxy-behavior.yaml     # behavior lane: real llm-proxy (REST->cloud) + CC repoint
 tests/
   conftest.py                   # qa_case marker -> JUnit property (joined by parse_junit)
   test_loop_smoke.py            # CASE-001..003 — fakes-only, no stack
   test_cc_real_smoke.py         # CASE-101..215 — full real-stack round-trips
+  test_cc_behavior_corpus.py    # behavior lane: corpus -> CC's real ChatGPTOpenAI provider
+  behavior/                     # tools.cc.yaml + corpus.cc.yaml (CC's REAL tools)
   fakes/                        # fake_llm/whisper/tts + canned_responses.yaml
 tools/parse_junit.py            # JUnit XML -> case-status JSON for the PR comment
 requirements-ci.txt             # test-client deps (pytest, httpx, paho-mqtt, FastAPI fakes)
-.github/workflows/integration-runner.yml
+.github/workflows/integration-runner.yml   # PR fast lane (repository_dispatch)
+.github/workflows/behavior-corpus.yml      # nightly + on-demand behavior lane
 docs/integration-tests.md       # full reference (migrated; see its banner)
 ```
 
