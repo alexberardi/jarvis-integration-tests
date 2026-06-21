@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Runner working dirs / artifacts
+_src/
+results.xml
+results.json
+seed.env
+*.log

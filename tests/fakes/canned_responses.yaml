@@ -1,0 +1,140 @@
+# Canned responses for the integration-runner fakes.
+#
+# fake_llm_backend.py reads `responses` — entries match against the latest
+# user-role message body by regex (first match wins).
+# fake_whisper.py reads `transcripts` — entries match against the uploaded
+# audio filename by regex.
+#
+# If nothing matches, both fakes fall back to a generic stub. To add a new
+# canned interaction, append an entry — keep regexes anchored loosely so
+# small wording changes in the test don't break the match.
+
+responses:
+  - prompt_regex: "what'?s? \\d+ plus \\d+"
+    response:
+      role: assistant
+      content: "The result is 62."
+      stop_reason: complete
+
+  - prompt_regex: "(set|start) (a |the )?(\\d+ ?\\w+ )?timer"
+    response:
+      role: assistant
+      content: ""
+      stop_reason: tool_calls
+      tool_calls:
+        - id: call_001
+          function:
+            name: set_timer
+            arguments: '{"duration_seconds": 300, "label": "test"}'
+
+  # Continuation prompt that CC builds after a node POSTs tool results to
+  # /voice/command/continue: text-based path injects a user message starting
+  # with "Here are the tool results." (see
+  # jarvis-command-center/app/core/conversation_handler.py:1056-1062).
+  # Match on that substring so the fake produces a final assistant message
+  # the test can assert on. content is plain text — CC's tool_call_parser
+  # tries to JSON-decode it, fails, falls back to ("stop", [], content),
+  # which becomes the assistant_message in the VoiceCommandResponse body.
+  - prompt_regex: "Here are the tool results"
+    response:
+      role: assistant
+      content: "Timer set for 5 minutes."
+      stop_reason: complete
+
+  - prompt_regex: "\\b(hello|hi|hey)\\b"
+    response:
+      role: assistant
+      content: "Hello! How can I help?"
+      stop_reason: complete
+
+  # Validation-required path: LLM detects an ambiguous parameter and emits
+  # the `request_validation` server tool. CC executes it, sees the
+  # `_validation_request: True` marker in the result, and returns a 202
+  # with stop_reason=validation_required + a validation_request body.
+  # The voice node renders the question to the user and resends their
+  # answer as a continuation. CASE-210 asserts the 202 shape.
+  - prompt_regex: "play (a |some )?music|play (a |the )?song"
+    response:
+      role: assistant
+      content: ""
+      stop_reason: tool_calls
+      tool_calls:
+        - id: call_validation_001
+          function:
+            name: request_validation
+            arguments: '{"question": "Which artist would you like?", "parameter_name": "artist", "options": ["Beatles", "Stones"]}'
+
+  # Multi-tool path: LLM emits 2 client tool_calls in one response (the
+  # "set a timer AND play music" type voice command). Tool names are
+  # generic (client_tool_one/two) so they don't collide with CC's
+  # server-tool registry — both end up in client_calls and CC returns
+  # them in a single 202 with both tool_calls preserved in order.
+  # CASE-211 asserts the 202 shape and both calls present.
+  - prompt_regex: "test multi.tool flow|fire (both|two) tools"
+    response:
+      role: assistant
+      content: ""
+      stop_reason: tool_calls
+      tool_calls:
+        - id: call_multi_001
+          function:
+            name: client_tool_one
+            arguments: '{"x": 1}'
+        - id: call_multi_002
+          function:
+            name: client_tool_two
+            arguments: '{"y": 2}'
+
+  # Mixed server+client tool branch (CASE-213). CC's tool loop runs
+  # the server tool first, appends its result to messages, then
+  # re-calls the LLM. The fake differentiates the two iterations via
+  # `requires_tool_message`:
+  #
+  # - Iteration 1: no tool message yet → falls past the
+  #   `requires_tool_message: true` entry, matches the second entry,
+  #   returns server (`remember`) + client (`client_tool_three`).
+  #   CC runs remember (returns no_speaker error — still counts as
+  #   server_results populated), continues loop with tool message.
+  # - Iteration 2: tool message present → `requires_tool_message:
+  #   true` entry matches first, returns ONLY `client_tool_four`.
+  #   CC has no more server tools to run, returns 202 with that.
+  #
+  # The test asserts the response contains *only* client_tool_four,
+  # which proves the loop ran twice (if it didn't, we'd see the
+  # iteration-1 client_tool_three or both names).
+  - prompt_regex: "test mixed tools"
+    requires_tool_message: true
+    response:
+      role: assistant
+      content: ""
+      stop_reason: tool_calls
+      tool_calls:
+        - id: call_mixed_iter2
+          function:
+            name: client_tool_four
+            arguments: '{"after_server_tool": true}'
+
+  - prompt_regex: "test mixed tools"
+    response:
+      role: assistant
+      content: ""
+      stop_reason: tool_calls
+      tool_calls:
+        - id: call_mixed_server
+          function:
+            name: remember
+            arguments: '{"content": "ci test"}'
+        - id: call_mixed_client
+          function:
+            name: client_tool_three
+            arguments: '{"z": 3}'
+
+transcripts:
+  - filename_regex: "timer.*\\.wav$"
+    transcript: "Set a five minute timer"
+
+  - filename_regex: "weather.*\\.wav$"
+    transcript: "What's the weather today"
+
+  - filename_regex: "calc.*\\.wav$"
+    transcript: "What's 25 plus 37"

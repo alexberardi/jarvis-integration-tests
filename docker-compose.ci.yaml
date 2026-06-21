@@ -1,0 +1,197 @@
+# docker-compose.ci.yaml — used by .github/workflows/integration-runner.yml
+# to bring up a real Jarvis service stack against which to run integration
+# tests. See docs/integration-tests.md for the full architecture.
+#
+# Fake LLM and Whisper backends run as background processes on the host
+# (the workflow starts them with `python -m tests.fakes.*` before
+# `docker compose up`). Containerized services reach them via
+# `host.docker.internal`.
+#
+# Profiles let the runner opt into different stacks per originating service:
+#   --profile core      → Postgres + auth + config-service + service-under-test
+# Additional profiles (full real stack with llm-proxy/whisper/tts from ghcr)
+# land in later iterations.
+
+name: jarvis-ci
+
+services:
+  postgres:
+    # CC's alembic migrations issue `CREATE EXTENSION IF NOT EXISTS vector`
+    # (CC stores memory embeddings via pgvector). pgvector/pgvector bundles
+    # the extension and is a drop-in for postgres:15.
+    image: pgvector/pgvector:pg15
+    environment:
+      POSTGRES_DB: jarvis_command_center
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      # Creates jarvis_auth and jarvis_config databases on first init.
+      - ./compose/postgres-init.sh:/docker-entrypoint-initdb.d/01-create-dbs.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    profiles: ["core"]
+    command: ["mosquitto", "-c", "/mosquitto-no-auth.conf"]
+    # Expose port to the host so CASE-212 can subscribe from the test
+    # process (paho-mqtt at localhost:1883). CC inside the docker
+    # network still reaches mosquitto via its service name.
+    ports:
+      - "1883:1883"
+
+  jarvis-auth:
+    # `:dev` tag is published on every push to main from
+    # alexberardi/jarvis-auth via .github/workflows/docker-build-push.yml.
+    # The image's CMD runs `alembic upgrade head` before uvicorn, so we
+    # don't need to override it. Listens on 8000 inside the container.
+    image: ghcr.io/alexberardi/jarvis-auth:dev
+    profiles: ["core"]
+    environment:
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/jarvis_auth
+      # Auth has variously been called SECRET_KEY or AUTH_SECRET_KEY in
+      # different revs — set both for safety. Neither is sensitive in CI.
+      SECRET_KEY: ci-auth-secret
+      AUTH_SECRET_KEY: ci-auth-secret
+      JARVIS_AUTH_ADMIN_TOKEN: ci-auth-admin-token
+      ACCESS_TOKEN_EXPIRE_MINUTES: "30"
+      REFRESH_TOKEN_EXPIRE_DAYS: "7"
+      CORS_ALLOWED_ORIGINS: "*"
+    ports:
+      - "7701:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)\""
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 20s
+
+  jarvis-config-service:
+    # `:dev` tag from alexberardi/jarvis-config-service. Listens on 7700.
+    # Unlike auth, config-service's image CMD is just `python -m app.main`
+    # — no alembic. Override the command to chain `alembic upgrade head`
+    # first; otherwise `Base.metadata.create_all()` in the lifespan
+    # handles a fresh DB but breaks on a partially-migrated one.
+    image: ghcr.io/alexberardi/jarvis-config-service:dev
+    profiles: ["core"]
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/jarvis_config
+      MIGRATIONS_DATABASE_URL: postgresql://postgres:postgres@postgres:5432/jarvis_config
+      JARVIS_CONFIG_PORT: "7700"
+      JARVIS_AUTH_URL: http://jarvis-auth:8000
+      JARVIS_AUTH_ADMIN_TOKEN: ci-auth-admin-token
+      # Required for config-service to accept POST /services from seed.sh.
+      # Without it, every write returns 500 "Admin token not configured on
+      # server" and the fakes never end up in config-service's registry —
+      # which forces CC's service-discovery into the env-var fallback path
+      # (see JARVIS_LLM_PROXY_API_URL below). Setting this here means
+      # seed.sh's register_service() calls actually succeed and CC can
+      # discover the fakes the way it would in prod.
+      JARVIS_CONFIG_ADMIN_TOKEN: ci-auth-admin-token
+      # config-service's own app credentials for calling other services.
+      # Not used by anything in v2.2's foundation tests; placeholders are
+      # fine.
+      JARVIS_APP_ID: jarvis-config-service
+      JARVIS_APP_KEY: ci-config-app-key
+    ports:
+      - "7700:7700"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      jarvis-auth:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head &&
+             python -m app.main"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:7700/health', timeout=2)\""
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 20s
+
+  jarvis-command-center:
+    profiles: ["core"]
+    # Default: pull the :dev image (matches what auth + config-service do).
+    # The runner workflow swaps this for `build:` via
+    # compose/ci-overlays/jarvis-command-center-from-source.yaml when CC
+    # is the originating service of the PR being tested. Same pattern
+    # applies to auth + config-service overlays — v2.15 fan-out.
+    image: ghcr.io/alexberardi/jarvis-command-center:dev
+    environment:
+      # Database
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/jarvis_command_center
+      # Service discovery — CC's _setup_service_config() will hit
+      # config-service at this URL on startup; on success it caches URLs
+      # in CC's own DB and logs "Service discovery initialized from
+      # jarvis-config-service". CC has no registered services in
+      # config-service yet (v2.3 will seed those), so the legacy fallbacks
+      # below still apply for LLM/Whisper.
+      JARVIS_CONFIG_URL: http://jarvis-config-service:7700
+      JARVIS_AUTH_BASE_URL: http://jarvis-auth:8000
+      # Env var name MUST be JARVIS_LLM_PROXY_API_URL (not _URL alone).
+      # CC's service_config.py:30 maps `jarvis-llm-proxy-api` →
+      # `JARVIS_LLM_PROXY_API_URL`, and llm_proxy_client.py:42 falls back
+      # to the same name when config-service discovery doesn't return a
+      # URL. The wrong name was a silent dead-letter env that bit v2.5.
+      JARVIS_LLM_PROXY_API_URL: http://host.docker.internal:7705
+      JARVIS_WHISPER_URL: http://host.docker.internal:7706
+      # Fake TTS at 7707 — added in v2.8 so CASE-206 can exercise the
+      # streaming /voice/command/continue/stream audio path. CC's
+      # tts_client.py:65 fallback name is JARVIS_TTS_URL.
+      JARVIS_TTS_URL: http://host.docker.internal:7707
+      JARVIS_MQTT_BROKER_URL: mqtt://mosquitto:1883
+      # App-to-app credentials. Not registered with auth yet — v2.3 seeds
+      # an app-client. Until then, calls that require app validation will
+      # fail; CC's /health doesn't require it.
+      ADMIN_API_KEY: ci-admin-key
+      JARVIS_APP_ID: command-center
+      # JARVIS_CC_APP_KEY is set by the workflow after compose/seed.sh
+      # registers command-center's app-client in auth (which generates the
+      # key). Falls back to ci-app-key for local-dev where you might not
+      # run seed.sh — calls that require app validation will fail in that
+      # case, but CC's /health still works.
+      JARVIS_APP_KEY: ${JARVIS_CC_APP_KEY:-ci-app-key}
+      # CC validates user JWTs locally using this shared secret — must
+      # match auth's SECRET_KEY / AUTH_SECRET_KEY above. The placeholder
+      # value here was fine through v2.12 because no test sent a JWT;
+      # CASE-212 (v2.13) is the first case where CC actually validates
+      # one, and the mismatch surfaced as 401 "Invalid token".
+      JARVIS_AUTH_SECRET_KEY: ci-auth-secret
+      JARVIS_LOG_CONSOLE_LEVEL: INFO
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "7703:8002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+      jarvis-auth:
+        condition: service_healthy
+      jarvis-config-service:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Run migrations before uvicorn (matches docker-compose.dev.yaml).
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8002"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8002/health', timeout=2)\""
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 30s

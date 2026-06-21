@@ -1,0 +1,8 @@
+# Minimal config for the integration test harness. This repo is NOT a Python
+# package — it is a pytest client + a set of FastAPI fakes. The only thing
+# pytest needs declared is the custom `qa_case` marker, which tests/conftest.py
+# exports into the JUnit XML for tools/parse_junit.py to join against a QA plan.
+[tool.pytest.ini_options]
+markers = [
+    "qa_case(id): map this test to a QA plan case (e.g. CASE-001). The id is exported to JUnit XML for the integration-runner to join against the QA plan.",
+]

@@ -1,0 +1,15 @@
+# Test-client dependencies for the integration runner.
+# The harness is a pure pytest + httpx client driving the live service stack;
+# the three host-process fakes (fake_llm/whisper/tts) are FastAPI/uvicorn apps.
+# Nothing here imports any Jarvis service code — the harness is dependency-free
+# of the ecosystem on purpose (it talks to services over HTTP/MQTT only).
+pytest
+pytest-asyncio
+fastapi
+uvicorn
+httpx
+pydantic
+pyyaml
+python-multipart
+# CASE-212/214/215 use paho.mqtt.enums.CallbackAPIVersion.VERSION2 (paho-mqtt >= 2.0).
+paho-mqtt>=2.0
