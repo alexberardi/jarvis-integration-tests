@@ -137,7 +137,7 @@
     action: {equals: add}
     tasks: {contains: "dentist"}
 
-- utterance: "put finish the report on my to-do list"
+- utterance: "add finish the report to my to-do list"
   tool: todo_list
   args:
     action: {equals: add}
