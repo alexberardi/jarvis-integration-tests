@@ -213,7 +213,8 @@ def test_utterance_routes_through_cc(idx: int, entry: dict) -> None:
 
     assert chosen is not None, (
         f"{utterance!r}: no tool call (stop_reason={stop_reason!r}, "
-        f"assistant_message={body.get('assistant_message')!r})"
+        f"assistant_message={body.get('assistant_message')!r}, "
+        f"commands={body.get('commands')!r})"
     )
     assert chosen == expected_tool, (
         f"{utterance!r} routed to {chosen!r}, expected {expected_tool!r}"

@@ -61,12 +61,13 @@ key. Collapsing the phases breaks the credential chain.
 > deliberately *fictional* stand-in toolset (`set_alarm` / `get_time` /
 > `play_music` / `add_to_list`). CC's **real** built-in tools differ in name *and*
 > argument shape (`reminder`, `get_current_time`, `shopping_list`/`todo_list`;
-> `duration_seconds` not `duration_minutes`; `device_name` not `device`). Optional
-> `jarvis-cmd-*` packages (weather / news / music) are **excluded** — a baseline
-> node may not have them, so they aren't a reliable CI signal; built-in
-> `calculate` + `convert_measurement` stand in their place. The lane ships its
-> **own** CC-targeted fixtures —
-> [`tests/behavior/tools.cc.yaml`](tests/behavior/tools.cc.yaml) (8 built-in tools,
+> `duration_seconds` not `duration_minutes`). Two classes of tool are **excluded**
+> from the CI corpus: optional `jarvis-cmd-*` packages (weather / news / music) —
+> a baseline node may not have them — and `control_device`, which in the full CC
+> stack is a multi-turn Home-Assistant flow (`get_ha_entities` → `control_device`)
+> that can't resolve without HA node-context data CI lacks. Built-in `calculate` +
+> `convert_measurement` stand in. The lane ships its **own** CC-targeted fixtures —
+> [`tests/behavior/tools.cc.yaml`](tests/behavior/tools.cc.yaml) (7 built-in tools,
 > transcribed from the real command sources) and
 > [`tests/behavior/corpus.cc.yaml`](tests/behavior/corpus.cc.yaml) (29 utterances) —
 > and routes them through CC's real native tool-calling path. Validated locally:
