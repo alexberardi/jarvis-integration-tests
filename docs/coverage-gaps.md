@@ -20,11 +20,32 @@ Authored as a cohesive cohort in the integration-runner lane
 
 | Gap | Disposition |
 | --- | --- |
-| CC node-authed endpoint accepts an unknown `id:key` (centralized-auth reject path) | **authored → CASE-216 (PR pending)** |
-| CC node-authed endpoint accepts a malformed no-colon key (legacy-fallback reject path) | **authored → CASE-217 (PR pending)** |
-| CC `/admin/nodes` (node-provisioning) accepts a wrong admin key | **authored → CASE-218 (PR pending)** |
-| auth `/internal/validate-node` accepts a wrong app key (app-to-app gate) | **authored → CASE-219 (PR pending)** |
-| auth `/internal/validate-node` accepts missing app headers (anonymous caller) | **authored → CASE-220 (PR pending)** |
+| CC node-authed endpoint accepts an unknown `id:key` (centralized-auth reject path) | **covered** (CASE-216, merged #7) |
+| CC node-authed endpoint accepts a malformed no-colon key (legacy-fallback reject path) | **covered** (CASE-217, merged #7) |
+| CC `/admin/nodes` (node-provisioning) accepts a wrong admin key | **covered** (CASE-218, merged #7) |
+| auth `/internal/validate-node` accepts a wrong app key (app-to-app gate) | **covered** (CASE-219, merged #7) |
+| auth `/internal/validate-node` accepts missing app headers (anonymous caller) | **covered** (CASE-220, merged #7) |
+
+## 2026-06-22 — llm-proxy app-auth REJECT contracts (from-source lane)
+
+The from-source llm-proxy lane proves the ACCEPT side of the proxy's app-to-app
+gate (CASE-302 sends the valid seeded key and gets 200) but never the REJECT
+side. `/v1/chat/completions` is the gateway in front of the model service —
+guarded by `require_app_auth` (`jarvis-llm-proxy-api/auth/app_auth.py`), which
+forwards the app headers to auth `/internal/app-ping`. A fail-open regression
+there lets any caller spend model compute / read completions. This is the exact
+mirror of the merged CC+auth CASE-219/220 pair, one layer out at the proxy.
+Verified against source: missing headers → 401 "Missing app credentials";
+wrong key → auth 401 → proxy 401 "Invalid app credentials". Authored in the
+from-source lane (`tests/test_from_source_services.py`, gated on
+`LLM_PROXY_URL`); wired into the lane's `jarvis-llm-proxy-api` plan and the
+cross-repo resolver KNOWN as `always_cases` (backend-agnostic — they reject
+before the backend, so they hold on both MOCK and REST).
+
+| Gap | Disposition |
+| --- | --- |
+| llm-proxy `/v1/chat/completions` accepts a WRONG app key (app-to-app gate) | **authored → CASE-303 (PR pending)** |
+| llm-proxy `/v1/chat/completions` accepts MISSING app headers (anonymous caller) | **authored → CASE-304 (PR pending)** |
 
 ### Related negative-path gaps still open (future cohorts)
 
@@ -40,5 +61,6 @@ Authored as a cohesive cohort in the integration-runner lane
   likely redundant, evaluate before authoring.
 - **open** — `/voice/command/stream` body-contract edges (missing
   `voice_command`, oversized payload → 413/422) against the real stack.
-- **open** — llm-proxy `/v1/chat/completions` negative app-auth (401 on bad
-  `X-Jarvis-App-*`) in the from-source lane — mirror of CASE-219 one layer out.
+- **authored → CASE-303/304 (PR pending)** — llm-proxy `/v1/chat/completions`
+  negative app-auth (401 on bad/missing `X-Jarvis-App-*`) in the from-source
+  lane — mirror of CASE-219/220 one layer out. See the cohort section above.

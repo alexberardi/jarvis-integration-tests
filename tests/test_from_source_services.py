@@ -13,6 +13,8 @@ runs, the behavior lane):
 
     LLM_PROXY_URL          -> CASE-301  (real proxy /health reaches model svc)
     LLM_PROXY_URL + app key-> CASE-302  (real proxy /v1/chat/completions, MOCK)
+    LLM_PROXY_URL          -> CASE-303  (real proxy /v1/chat REJECTS a wrong app key)
+    LLM_PROXY_URL          -> CASE-304  (real proxy /v1/chat REJECTS missing app headers)
     TTS_FROM_SOURCE        -> CASE-311  (CC -> real Piper TTS, real audio)
     WHISPER_FROM_SOURCE    -> CASE-321  (CC -> real whisper, real transcribe)
 
@@ -176,6 +178,75 @@ def test_real_proxy_chat_completions_contract_mock_backend():
     assert "mock" in content, (
         f"expected the MOCK backend echo in choices[0].message.content (proves "
         f"the real API -> model service -> MOCK chain), got {content!r}"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# CASE-303 — real proxy /v1/chat/completions REJECTS a wrong app key (401).
+# --------------------------------------------------------------------------- #
+@pytest.mark.skipif(not LLM_PROXY_URL, reason="LLM_PROXY_URL unset — llm-proxy not built from source")
+@pytest.mark.qa_case("CASE-303")
+def test_real_proxy_chat_completions_rejects_wrong_app_key():
+    """POST /v1/chat/completions with a WRONG X-Jarvis-App-Key -> 401.
+
+    The proxy gates /v1/chat/completions with require_app_auth (auth/app_auth.py),
+    which forwards the app headers to jarvis-auth /internal/app-ping; a non-200
+    there becomes a 401 "Invalid app credentials". CASE-302 only ever sends the
+    VALID seeded key (the accept side). This is the reject side: the proxy is the
+    app-to-app gateway in front of the model service, so if this gate failed open
+    any caller presenting arbitrary app headers could spend model compute or read
+    completions. Mirror of CASE-219 (auth's validate-node wrong-app-key) one layer
+    out, at the proxy. A well-formed chat body (model + messages, as CASE-302
+    sends) isolates the failure to the credential check, not body validation.
+    """
+    resp = httpx.post(
+        f"{LLM_PROXY_URL.rstrip('/')}/v1/chat/completions",
+        headers={
+            "X-Jarvis-App-Id": LLM_PROXY_APP_ID,
+            "X-Jarvis-App-Key": "ci-wrong-app-key",
+        },
+        json={
+            "model": "live",
+            "messages": [{"role": "user", "content": "hello from ci"}],
+        },
+        timeout=30.0,
+    )
+    assert resp.status_code == 401, (
+        f"expected 401 for a wrong app key on /v1/chat/completions, got "
+        f"{resp.status_code} body={resp.text[:400]} — the proxy's app-to-app gate "
+        f"on the chat endpoint may be failing open."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# CASE-304 — real proxy /v1/chat/completions REJECTS missing app headers (401).
+# --------------------------------------------------------------------------- #
+@pytest.mark.skipif(not LLM_PROXY_URL, reason="LLM_PROXY_URL unset — llm-proxy not built from source")
+@pytest.mark.qa_case("CASE-304")
+def test_real_proxy_chat_completions_rejects_missing_app_headers():
+    """POST /v1/chat/completions with NO app headers -> 401.
+
+    The missing-credential branch of require_app_auth (app_auth.py: no app id/key
+    -> 401 "Missing app credentials") is a DISTINCT code path from CASE-303's
+    wrong-key branch and is the more common real regression: a refactor that
+    validates a key when present but forgets the presence check, or a header-name
+    typo, would leave the proxy's chat endpoint open to anonymous callers. Sending
+    a valid body with no app headers pins that the gateway refuses unauthenticated
+    callers outright. Mirror of CASE-220 (auth's validate-node missing-headers) at
+    the proxy layer.
+    """
+    resp = httpx.post(
+        f"{LLM_PROXY_URL.rstrip('/')}/v1/chat/completions",
+        json={
+            "model": "live",
+            "messages": [{"role": "user", "content": "hello from ci"}],
+        },
+        timeout=30.0,
+    )
+    assert resp.status_code == 401, (
+        f"expected 401 for missing app headers on /v1/chat/completions, got "
+        f"{resp.status_code} body={resp.text[:400]} — the proxy's chat endpoint "
+        f"may be accepting anonymous callers."
     )
 
 
