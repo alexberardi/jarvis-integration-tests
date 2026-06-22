@@ -44,18 +44,42 @@ before the backend, so they hold on both MOCK and REST).
 
 | Gap | Disposition |
 | --- | --- |
-| llm-proxy `/v1/chat/completions` accepts a WRONG app key (app-to-app gate) | **authored → CASE-303 (PR pending)** |
-| llm-proxy `/v1/chat/completions` accepts MISSING app headers (anonymous caller) | **authored → CASE-304 (PR pending)** |
+| llm-proxy `/v1/chat/completions` accepts a WRONG app key (app-to-app gate) | **covered** (CASE-303, merged #10) |
+| llm-proxy `/v1/chat/completions` accepts MISSING app headers (anonymous caller) | **covered** (CASE-304, merged #10) |
+
+## 2026-06-22 — negative auth contracts: the user-JWT / mobile-admin surface (CC)
+
+CASE-216..220 cover CC's node `X-API-Key` reject paths and the app-to-app
+(`X-Jarvis-App-*`) boundary, but the THIRD CC auth mechanism —
+`verify_user_jwt` (`Authorization: Bearer <jwt>`, `deps.py:243`), the user/mobile
+surface guarding node settings-requests, k2, and factory-reset — had ZERO
+negative coverage. Its reject branches are the security contract for the mobile
+app: a fail-open regression lets an anonymous caller mutate node settings or
+dispatch a device-bricking factory-reset. Authored as a cohesive cohort in the
+integration-runner lane (`tests/test_cc_auth_contracts.py`, gated on `CC_URL`).
+verify_user_jwt is evaluated as a dependency before the handler body, so a
+literal nonexistent `node_id` still yields the 401 (not a 404) — the assertion
+isolates the auth gate. Verified against source: missing/non-Bearer header → 401
+"Missing or invalid Authorization header"; undecodable Bearer → 401 "Invalid
+token" (`jwt.decode` JWTError branch).
+
+| Gap | Disposition |
+| --- | --- |
+| CC `/nodes/{id}/settings/requests` accepts a MISSING `Authorization` header (presence-check branch of verify_user_jwt) | **authored → CASE-221 (PR pending)** |
+| CC `/nodes/{id}/settings/requests` accepts a present-but-undecodable Bearer token (jwt.decode reject branch) | **authored → CASE-222 (PR pending)** |
+| CC `/admin/nodes/{id}/factory-reset` (device-bricking surface) accepts a MISSING `Authorization` header — proves the destructive endpoint is auth-gated at all | **authored → CASE-223 (PR pending)** |
 
 ### Related negative-path gaps still open (future cohorts)
 
 - **open** — CC node-authed endpoint with a *missing* `X-API-Key` header returns
   422 (FastAPI required-header default). Lower value (framework default, not a
   service decision); deferred to avoid vanity.
-- **open** — CC user-JWT endpoints (`verify_user_jwt`): expired token → 401,
-  malformed Bearer → 401, valid-but-non-member → 403 (`verify_household_role`).
-  Needs a JWT-signing fixture or a seeded second user; larger setup, separate
-  cohort.
+- **partially covered** — CC user-JWT endpoints (`verify_user_jwt`): missing
+  header → 401 and undecodable Bearer → 401 are now **authored → CASE-221/222
+  (PR pending)**; factory-reset missing-auth → 401 is **CASE-223 (PR pending)**.
+  Still **open** (need a JWT-signing fixture or a seeded second user; larger
+  setup): expired-token → 401 (`ExpiredSignatureError` branch) and
+  valid-but-non-member → 403 (`verify_household_role`).
 - **open** — auth `/internal/app-ping` negative paths (wrong/missing app creds →
   401) — same require_app_client gate as CASE-219/220 on a different endpoint;
   likely redundant, evaluate before authoring.
