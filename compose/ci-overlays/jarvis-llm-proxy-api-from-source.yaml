@@ -1,0 +1,115 @@
+# compose/ci-overlays/jarvis-llm-proxy-api-from-source.yaml
+#
+# T9 — FROM-SOURCE overlay for an llm-proxy PR. Brings up a REAL jarvis-llm-proxy
+# built from the PR's checked-out source (NOT the :dev-cpu image) and repoints
+# command-center at it, so the PR's actual code serves the OpenAI-compatible
+# /v1/chat/completions contract CC depends on for every voice command — end to
+# end through the real container, not the host fake.
+#
+# Unlike the behavior overlay (llm-proxy-behavior.yaml, which points `live` at a
+# cloud model via REST and needs an OPENAI_API_KEY), this lane uses the MOCK
+# backend: no model weights, no key, deterministic. The MOCK backend echoes a
+# fixed string with tool_calls=None (backends/mock_backend.py), so this lane
+# proves the CONTRACT + WIRING (auth round-trip, API->model-service internal
+# proxy, OpenAI response shaping, MOCK passthrough), NOT tool routing — that's
+# the behavior lane's job. The two are complementary.
+#
+# Mirrors the two-process split from llm-proxy-behavior.yaml (one CPU image, two
+# uvicorn entrypoints): the model service owns the backend; the stateless API
+# server proxies to it. Both build from the same source context.
+#
+# Brought up by .github/workflows/from-source-services.yml with:
+#   docker compose -f docker-compose.ci.yaml \
+#       -f compose/ci-overlays/jarvis-llm-proxy-api-from-source.yaml \
+#       --profile core --profile from-source up -d --wait \
+#       jarvis-llm-proxy-model jarvis-llm-proxy-api
+
+name: jarvis-ci
+
+services:
+  jarvis-llm-proxy-model:
+    profiles: ["from-source"]
+    # Build the model service from the PR source. Dockerfile.cpu is the CPU
+    # variant (the default Dockerfile is CUDA and won't build on a GPU-less
+    # runner); it's what publishes :dev-cpu on push to main.
+    build:
+      context: ${LLM_PROXY_SOURCE_PATH:-./_src/jarvis-llm-proxy-api}
+      dockerfile: Dockerfile.cpu
+      cache_from:
+        - type=gha
+      cache_to:
+        - type=gha,mode=max
+    # The image declares no CMD (run.sh is the host entrypoint); start the model
+    # service directly. WORKDIR is /app, so services.model_service:app resolves.
+    command: ["python", "-m", "uvicorn", "services.model_service:app", "--host", "0.0.0.0", "--port", "7705"]
+    environment:
+      # ---- live == background == MOCK: no weights, no key, deterministic ----
+      # model_manager reads these env fallbacks when no settings DB is present
+      # (_create_backend: backend_type=="MOCK" -> MockBackend(model_path or
+      # f"mock-{model_type}"), so no real path is required). Setting both aliases
+      # to MOCK makes them resolve to a single shared instance.
+      JARVIS_LIVE_MODEL_BACKEND: MOCK
+      JARVIS_BACKGROUND_MODEL_BACKEND: MOCK
+      JARVIS_LIVE_MODEL_NAME: mock
+      JARVIS_BACKGROUND_MODEL_NAME: mock
+      # Internal-token guard for /internal/model/* — must match the API server.
+      MODEL_SERVICE_TOKEN: ci-internal-token
+      # Placeholders so the import chain (settings/pipeline routes resolve an auth
+      # URL at module import; db session wants a valid URL) doesn't crash. Neither
+      # Postgres nor auth is called on the MOCK chat path.
+      JARVIS_AUTH_BASE_URL: http://jarvis-auth:8000
+      DATABASE_URL: "sqlite:////tmp/llmproxy.db"
+      PYTHONUNBUFFERED: "1"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:7705/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 20s
+
+  jarvis-llm-proxy-api:
+    profiles: ["from-source"]
+    build:
+      context: ${LLM_PROXY_SOURCE_PATH:-./_src/jarvis-llm-proxy-api}
+      dockerfile: Dockerfile.cpu
+      cache_from:
+        - type=gha
+      cache_to:
+        - type=gha,mode=max
+    command: ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7704"]
+    depends_on:
+      jarvis-llm-proxy-model:
+        condition: service_healthy
+    environment:
+      # The API server proxies /v1/chat/completions -> model service.
+      MODEL_SERVICE_URL: http://jarvis-llm-proxy-model:7705
+      MODEL_SERVICE_TOKEN: ci-internal-token
+      LLM_PROXY_INTERNAL_TOKEN: ci-internal-token
+      # require_app_auth forwards the CALLER's (CC's) X-Jarvis-App-Id/Key to
+      # jarvis-auth /internal/app-ping; it needs only the auth base URL, not its
+      # own creds. CC's seeded `command-center` app-key validates here.
+      JARVIS_AUTH_BASE_URL: http://jarvis-auth:8000
+      DATABASE_URL: "sqlite:////tmp/llmproxy.db"
+      PYTHONUNBUFFERED: "1"
+    ports:
+      # Exposed so the test client (and a failed-run debugger) can hit the real
+      # proxy directly; CC reaches it over the compose network by service name.
+      - "7704:7704"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:7704/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 20s
+
+  # Repoint command-center at the REAL proxy's API server (7704) instead of the
+  # host fake LLM. Merge-only override — the base service's `core` profile,
+  # image, and other env are inherited. (Belt-and-suspenders with the
+  # config-service registration seed.sh does when LLM_PROXY_HOST is set.)
+  jarvis-command-center:
+    environment:
+      JARVIS_LLM_PROXY_API_URL: http://jarvis-llm-proxy-api:7704

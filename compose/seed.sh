@@ -134,9 +134,19 @@ LLM_PROXY_HOST="${LLM_PROXY_HOST:-host.docker.internal}"
 LLM_PROXY_PORT="${LLM_PROXY_PORT:-7705}"
 register_service "jarvis-llm-proxy-api" "$LLM_PROXY_HOST" "$LLM_PROXY_PORT" || \
   log "WARN llm-proxy registration failed (continuing — CC falls back to env)"
-register_service "jarvis-whisper-api" "host.docker.internal" 7706 || \
+# whisper + tts targets are parameterized the same way (T9 from-source lanes):
+# the fast/behavior lanes leave them at the host fakes (host.docker.internal),
+# while a whisper/tts from-source PR points discovery at the REAL container
+# (e.g. WHISPER_HOST=jarvis-whisper-api) so CC routes through the real service.
+# CC's config-service discovery takes precedence over its env fallback, so this
+# row — not JARVIS_WHISPER_URL/JARVIS_TTS_URL — is what CC actually uses.
+WHISPER_HOST="${WHISPER_HOST:-host.docker.internal}"
+WHISPER_PORT="${WHISPER_PORT:-7706}"
+TTS_HOST="${TTS_HOST:-host.docker.internal}"
+TTS_PORT="${TTS_PORT:-7707}"
+register_service "jarvis-whisper-api" "$WHISPER_HOST" "$WHISPER_PORT" || \
   log "WARN whisper registration failed (continuing — CC falls back to env)"
-register_service "jarvis-tts" "host.docker.internal" 7707 || \
+register_service "jarvis-tts" "$TTS_HOST" "$TTS_PORT" || \
   log "WARN tts registration failed (continuing — CC falls back to env)"
 
 # v2.4 — register a CI user via /auth/register. The endpoint auto-creates

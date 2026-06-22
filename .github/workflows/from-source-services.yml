@@ -1,0 +1,337 @@
+name: From-source services (llm-proxy / whisper / tts)
+
+# T9 — gives a jarvis-llm-proxy-api / jarvis-whisper-api / jarvis-tts PR a real
+# cross-service signal instead of fakes-only smoke. It builds the originating
+# service FROM the PR's source, wires it into the real CC + auth + config stack
+# (repointing CC at the real container and faking only the OTHER two services),
+# and runs the marker-bound real round-trip cases in
+# tests/test_from_source_services.py.
+#
+# Why a separate workflow from integration-runner.yml: auth/cc/config are an
+# in-place image->build swap, but llm-proxy/whisper/tts are NOT in the base
+# compose (they're host fakes). Bringing them up real means ADDING a container +
+# repointing CC + starting only the remaining fakes + running a different case
+# set — the same shape as behavior-corpus.yml, so this generalizes that.
+#
+# Triggers:
+#   * workflow_dispatch — manual validation (no PR needed).
+#   * repository_dispatch [from-source-integration] — fired by a service repo's
+#     integration-trigger when a PR opens (cutover; carries PR context so the
+#     result is posted back on the PR).
+#
+# No OPENAI key: llm-proxy runs the MOCK backend; whisper/tts need no model
+# download (their CPU images bake the weights at build).
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "Service under test (jarvis-llm-proxy-api | jarvis-whisper-api | jarvis-tts)"
+        required: true
+      source_repo:
+        description: "owner/name to build from (default: alexberardi/<service>)"
+        required: false
+        default: ""
+      source_ref:
+        description: "Branch or SHA to build (default: main)"
+        required: false
+        default: "main"
+      pr_number:
+        description: "Optional PR number to post results on"
+        required: false
+        default: ""
+  repository_dispatch:
+    types: [from-source-integration]
+
+concurrency:
+  # One run per (service, ref). A newer push for the same PR cancels the old run.
+  group: from-source-${{ github.event.client_payload.service || inputs.service }}-${{ github.event.client_payload.source_ref || inputs.source_ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  from-source:
+    runs-on: ubuntu-latest
+    # Generous: a cold whisper build compiles whisper.cpp from C++ source. The
+    # buildx GHA cache collapses warm runs.
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve service matrix
+        id: r
+        run: |
+          if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
+            SERVICE="${{ github.event.client_payload.service }}"
+            SOURCE_REPO="${{ github.event.client_payload.source_repo }}"
+            SOURCE_REF="${{ github.event.client_payload.head_sha || github.event.client_payload.source_ref }}"
+            PR_NUMBER="${{ github.event.client_payload.pr_number }}"
+            ORIGINATING_REPO="${{ github.event.client_payload.originating_repo }}"
+          else
+            SERVICE="${{ inputs.service }}"
+            SOURCE_REPO="${{ inputs.source_repo }}"
+            SOURCE_REF="${{ inputs.source_ref }}"
+            PR_NUMBER="${{ inputs.pr_number }}"
+            ORIGINATING_REPO=""
+          fi
+          [[ -z "$SOURCE_REPO" ]] && SOURCE_REPO="alexberardi/${SERVICE}"
+          [[ -z "$ORIGINATING_REPO" ]] && ORIGINATING_REPO="$SOURCE_REPO"
+          [[ -z "$SOURCE_REF" ]] && SOURCE_REF="main"
+
+          OVERLAY="compose/ci-overlays/${SERVICE}-from-source.yaml"
+          # Per-lane: which fakes stay faked (start them), which discovery host
+          # to register the REAL service at, which test gating flags to set, and
+          # which compose services to build/bring up.
+          case "$SERVICE" in
+            jarvis-llm-proxy-api)
+              START_FAKE_LLM=false;  START_FAKE_WHISPER=true;  START_FAKE_TTS=true
+              UP_SERVICES="jarvis-llm-proxy-model jarvis-llm-proxy-api"
+              SEED_ENV="LLM_PROXY_HOST=jarvis-llm-proxy-api LLM_PROXY_PORT=7704"
+              TEST_ENV="LLM_PROXY_FROM_SOURCE=1 LLM_PROXY_URL=http://localhost:7704"
+              SRC_VAR="LLM_PROXY_SOURCE_PATH"
+              ;;
+            jarvis-whisper-api)
+              START_FAKE_LLM=true;   START_FAKE_WHISPER=false; START_FAKE_TTS=true
+              UP_SERVICES="jarvis-whisper-api"
+              SEED_ENV="WHISPER_HOST=jarvis-whisper-api WHISPER_PORT=7706"
+              TEST_ENV="WHISPER_FROM_SOURCE=1"
+              SRC_VAR="WHISPER_SOURCE_PATH"
+              ;;
+            jarvis-tts)
+              START_FAKE_LLM=true;   START_FAKE_WHISPER=true;  START_FAKE_TTS=false
+              UP_SERVICES="jarvis-tts"
+              SEED_ENV="TTS_HOST=jarvis-tts TTS_PORT=7707"
+              TEST_ENV="TTS_FROM_SOURCE=1"
+              SRC_VAR="TTS_SOURCE_PATH"
+              ;;
+            *)
+              echo "::error::Unknown service '$SERVICE' (expected jarvis-llm-proxy-api | jarvis-whisper-api | jarvis-tts)"
+              exit 1
+              ;;
+          esac
+          {
+            echo "service=$SERVICE"
+            echo "source_repo=$SOURCE_REPO"
+            echo "source_ref=$SOURCE_REF"
+            echo "pr_number=$PR_NUMBER"
+            echo "originating_repo=$ORIGINATING_REPO"
+            echo "overlay=$OVERLAY"
+            echo "up_services=$UP_SERVICES"
+            echo "start_fake_llm=$START_FAKE_LLM"
+            echo "start_fake_whisper=$START_FAKE_WHISPER"
+            echo "start_fake_tts=$START_FAKE_TTS"
+            echo "seed_env=$SEED_ENV"
+            echo "test_env=$TEST_ENV"
+            echo "src_var=$SRC_VAR"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check out the service source at the PR ref
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.r.outputs.source_repo }}
+          ref: ${{ steps.r.outputs.source_ref }}
+          # The overlay build.context defaults to ./_src/<service>.
+          path: _src/${{ steps.r.outputs.service }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-from-source-${{ hashFiles('requirements-ci.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-from-source-
+            ${{ runner.os }}-pip-
+
+      - name: Install test-client dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-ci.txt
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Start the remaining host fakes
+        run: |
+          # Only the services NOT built from source stay faked. Starting the
+          # fake whose port the real container maps to the host would collide,
+          # so the replaced service's fake is deliberately skipped.
+          if [[ "${{ steps.r.outputs.start_fake_llm }}" == "true" ]]; then
+            nohup python -m tests.fakes.fake_llm_backend --port 7705 > /tmp/fake_llm.log 2>&1 &
+            echo "FAKE_LLM_PID=$!" >> "$GITHUB_ENV"
+          fi
+          if [[ "${{ steps.r.outputs.start_fake_whisper }}" == "true" ]]; then
+            nohup python -m tests.fakes.fake_whisper --port 7706 > /tmp/fake_whisper.log 2>&1 &
+            echo "FAKE_WHISPER_PID=$!" >> "$GITHUB_ENV"
+          fi
+          if [[ "${{ steps.r.outputs.start_fake_tts }}" == "true" ]]; then
+            nohup python -m tests.fakes.fake_tts --port 7707 > /tmp/fake_tts.log 2>&1 &
+            echo "FAKE_TTS_PID=$!" >> "$GITHUB_ENV"
+          fi
+          sleep 3
+          echo "Fakes started (llm=${{ steps.r.outputs.start_fake_llm }} whisper=${{ steps.r.outputs.start_fake_whisper }} tts=${{ steps.r.outputs.start_fake_tts }})"
+
+      - name: Phase 1 — bring up deps (postgres + auth + config-service + mqtt)
+        run: |
+          docker compose -f docker-compose.ci.yaml \
+            --profile core up -d --wait \
+            postgres jarvis-auth jarvis-config-service mosquitto
+
+      - name: Seed auth + config-service (register the REAL service in discovery)
+        env:
+          AUTH_URL: http://localhost:7701
+          CONFIG_URL: http://localhost:7700
+          AUTH_ADMIN_TOKEN: ci-auth-admin-token
+          CONFIG_ADMIN_TOKEN: ci-auth-admin-token
+        run: |
+          # SEED_ENV points the service-under-test's discovery row at its real
+          # container (e.g. WHISPER_HOST=jarvis-whisper-api); the other two stay
+          # at the host fakes.
+          export ${{ steps.r.outputs.seed_env }}
+          bash compose/seed.sh
+
+      - name: Phase 1.5 — build + bring up the real service from source
+        run: |
+          docker compose -f docker-compose.ci.yaml -f ${{ steps.r.outputs.overlay }} \
+            --profile core --profile from-source up -d --wait --build \
+            ${{ steps.r.outputs.up_services }}
+          docker compose -f docker-compose.ci.yaml -f ${{ steps.r.outputs.overlay }} ps
+
+      - name: Phase 2 — bring up CC pointed at the real service
+        env:
+          JARVIS_CC_APP_KEY: ${{ env.JARVIS_CC_APP_KEY }}
+        run: |
+          docker compose -f docker-compose.ci.yaml -f ${{ steps.r.outputs.overlay }} \
+            --profile core --profile from-source up -d --wait \
+            jarvis-command-center
+          docker compose -f docker-compose.ci.yaml -f ${{ steps.r.outputs.overlay }} ps
+
+      - name: Phase 2.5 — register node in CC
+        env:
+          CC_URL: http://localhost:7703
+          CC_ADMIN_KEY: ci-admin-key
+          CC_HOUSEHOLD_ID: ${{ env.CC_HOUSEHOLD_ID }}
+        run: |
+          set -e
+          NODE_ID="ci-node-001"
+          BODY="{\"node_id\":\"$NODE_ID\",\"household_id\":\"$CC_HOUSEHOLD_ID\",\"room\":\"ci-room\",\"name\":\"CI Node\"}"
+          RESP_FILE=/tmp/cc_node_resp.json
+          STATUS=$(curl -sS -o "$RESP_FILE" -w "%{http_code}" -X POST \
+            "$CC_URL/api/v0/admin/nodes" \
+            -H "X-API-Key: $CC_ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$BODY")
+          if [[ "$STATUS" -lt 200 || "$STATUS" -ge 300 ]]; then
+            echo "::error::CC /admin/nodes failed: HTTP $STATUS"
+            cat "$RESP_FILE"
+            exit 1
+          fi
+          CC_NODE_KEY=$(python3 -c "import json; print(json.load(open('$RESP_FILE'))['node_key'])")
+          {
+            echo "CC_NODE_ID=$NODE_ID"
+            echo "CC_NODE_KEY=$CC_NODE_KEY"
+          } >> "$GITHUB_ENV"
+
+      - name: Run from-source round-trip cases
+        id: pytest
+        continue-on-error: true
+        env:
+          CC_URL: http://localhost:7703
+          CC_NODE_ID: ${{ env.CC_NODE_ID }}
+          CC_NODE_KEY: ${{ env.CC_NODE_KEY }}
+        run: |
+          export ${{ steps.r.outputs.test_env }}
+          pytest tests/test_from_source_services.py \
+            --junit-xml=results.xml --tb=short -v
+
+      - name: Parse results into JSON
+        if: always()
+        run: |
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          if [[ ! -f results.xml ]]; then
+            echo '<?xml version="1.0"?><testsuites/>' > results.xml
+          fi
+          # plan-cases is the lane's case for this service; parse_junit reports
+          # any missing one as not-implemented.
+          case "${{ steps.r.outputs.service }}" in
+            jarvis-llm-proxy-api) PLAN="CASE-301,CASE-302" ;;
+            jarvis-whisper-api)   PLAN="CASE-321" ;;
+            jarvis-tts)           PLAN="CASE-311" ;;
+          esac
+          python tools/parse_junit.py results.xml \
+            --plan-cases "$PLAN" --run-url "$RUN_URL" --output results.json
+          cat results.json
+
+      - name: Post results to originating PR
+        if: ${{ always() && steps.r.outputs.pr_number != '' && steps.r.outputs.originating_repo != '' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.INTEGRATION_COMMENT_TOKEN }}
+          ORIGINATING_REPO: ${{ steps.r.outputs.originating_repo }}
+          PR_NUMBER: ${{ steps.r.outputs.pr_number }}
+        run: |
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "::warning::INTEGRATION_COMMENT_TOKEN not set; skipping PR comment"
+            exit 0
+          fi
+          python <<'PYEOF' > comment.md
+          import json
+          d = json.load(open("results.json")); s = d["summary"]
+          print("<!-- from-source-test-results:v1 -->")
+          print("## From-source integration results")
+          print()
+          print(f"**{s['pass']} pass | {s['fail']} fail | {s['skipped']} skipped | {s['not_implemented']} not-implemented** (of {s['total']})")
+          print()
+          print("| Case | Status | Test |")
+          print("| --- | --- | --- |")
+          for cid, info in sorted(d["cases"].items()):
+              print(f"| `{cid}` | {info['status']} | `{info['test_name'] or '(no test bound)'}` |")
+          print()
+          print(f"[CI run]({d['run_url']})")
+          PYEOF
+          gh pr comment "$PR_NUMBER" --repo "$ORIGINATING_REPO" --body-file comment.md || echo "::warning::comment post failed"
+
+      - name: Fail the job if any case failed
+        if: always()
+        run: |
+          FAIL=$(python -c "import json; print(json.load(open('results.json'))['summary']['fail'])")
+          NOT_IMPL=$(python -c "import json; print(json.load(open('results.json'))['summary']['not_implemented'])")
+          echo "fail=$FAIL not_implemented=$NOT_IMPL"
+          if [[ "$FAIL" -gt 0 || "$NOT_IMPL" -gt 0 ]]; then
+            echo "::error::From-source cases did not all pass"
+            exit 1
+          fi
+
+      - name: Tail service logs on failure
+        if: failure()
+        run: |
+          echo "=== CC logs (tail) ==="
+          docker compose -f docker-compose.ci.yaml -f ${{ steps.r.outputs.overlay }} logs --tail=120 jarvis-command-center || true
+          echo "=== service-under-test logs (tail) ==="
+          docker compose -f docker-compose.ci.yaml -f ${{ steps.r.outputs.overlay }} logs --tail=120 ${{ steps.r.outputs.up_services }} || true
+          echo "=== fake logs ==="
+          cat /tmp/fake_llm.log 2>/dev/null || true
+          cat /tmp/fake_whisper.log 2>/dev/null || true
+          cat /tmp/fake_tts.log 2>/dev/null || true
+
+      - name: Tear down
+        if: always()
+        run: |
+          docker compose -f docker-compose.ci.yaml -f ${{ steps.r.outputs.overlay }} \
+            --profile core --profile from-source down -v --remove-orphans || true
+          kill "${FAKE_LLM_PID:-0}" "${FAKE_WHISPER_PID:-0}" "${FAKE_TTS_PID:-0}" 2>/dev/null || true
