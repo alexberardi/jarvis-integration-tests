@@ -1,0 +1,72 @@
+# compose/ci-overlays/jarvis-tts-from-source.yaml
+#
+# T9 — FROM-SOURCE overlay for a jarvis-tts PR. Brings up a REAL tts built from
+# the PR's checked-out source (NOT the :dev image) and repoints command-center
+# at it, so the PR's actual synthesis code produces the audio CC streams back —
+# instead of the host fake's 32 bytes of silence.
+#
+# tts's Dockerfile (linux/amd64+arm64, the unsuffixed :dev tag) bakes the Piper
+# voice en_GB-alan-low.onnx (~60MB) at build time. Piper is CPU-only and needs no
+# GPU. We force TTS_PROVIDER=piper because the default provider is `kokoro`,
+# which downloads ~300MB of voice weights to HF_HOME on first use — too slow/
+# heavy for CI. The image's CMD already runs `uvicorn app.main:app --port
+# ${TTS_PORT}` (7707), so we don't override it.
+#
+# No settings DB needed (same reasoning as the whisper overlay):
+# jarvis_settings_client.get() swallows DB errors and falls through to env
+# fallbacks, so a throwaway sqlite DATABASE_URL makes tts.provider resolve to
+# TTS_PROVIDER. Even if settings resolution failed entirely, provider_manager
+# falls back to Piper — but TTS_PROVIDER=piper makes it deterministic. /speak/
+# stream is gated by verify_app_auth; service_config.get_auth_url() reads
+# JARVIS_AUTH_BASE_URL at import, so CC's forwarded app creds validate.
+#
+# Brought up by .github/workflows/from-source-services.yml with:
+#   docker compose -f docker-compose.ci.yaml \
+#       -f compose/ci-overlays/jarvis-tts-from-source.yaml \
+#       --profile core --profile from-source up -d --wait jarvis-tts
+
+name: jarvis-ci
+
+services:
+  jarvis-tts:
+    profiles: ["from-source"]
+    build:
+      context: ${TTS_SOURCE_PATH:-./_src/jarvis-tts}
+      cache_from:
+        - type=gha
+      cache_to:
+        - type=gha,mode=max
+    environment:
+      # Force Piper (baked, CPU) over the default Kokoro (~300MB download).
+      TTS_PROVIDER: piper
+      # Throwaway sqlite — get() catches the missing-table error and falls back
+      # to TTS_PROVIDER. Avoids the default postgres URL pointing at a
+      # nonexistent jarvis_tts DB.
+      DATABASE_URL: "sqlite:////tmp/tts.db"
+      JARVIS_AUTH_BASE_URL: http://jarvis-auth:8000
+      JARVIS_LOG_CONSOLE_LEVEL: INFO
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "7707:7707"
+    depends_on:
+      jarvis-auth:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      # curl isn't guaranteed in the tts image, but python is — use a one-liner
+      # urlopen probe (matches the auth/config-service healthchecks in the base
+      # compose). /health returns {"status":"healthy"}.
+      test:
+        - "CMD-SHELL"
+        - "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:7707/health', timeout=2)\""
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 30s
+
+  # Repoint command-center at the REAL tts container (discovery-miss fallback;
+  # seed.sh also re-registers tts here via TTS_HOST/TTS_PORT).
+  jarvis-command-center:
+    environment:
+      JARVIS_TTS_URL: http://jarvis-tts:7707

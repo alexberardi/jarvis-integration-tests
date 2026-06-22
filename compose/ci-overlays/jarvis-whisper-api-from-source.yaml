@@ -1,0 +1,78 @@
+# compose/ci-overlays/jarvis-whisper-api-from-source.yaml
+#
+# T9 — FROM-SOURCE overlay for a jarvis-whisper-api PR. Brings up a REAL whisper
+# built from the PR's checked-out source (NOT the :dev image) and repoints
+# command-center at it, so the PR's actual transcription code answers CC's
+# /media/whisper/transcribe proxy — instead of the host fake.
+#
+# whisper's default Dockerfile is the CPU build (linux/amd64+arm64, the
+# unsuffixed :dev tag): it compiles whisper.cpp from source (pywhispercpp is
+# sdist-only) and bakes ggml-base.en.bin at build time, so the running container
+# has a real model with NO GPU and NO runtime download. The buildx GHA cache
+# keeps warm builds fast; the first/cold build pays the C++ compile.
+#
+# No settings DB needed. whisper resolves whisper.model_path through
+# jarvis_settings_client, whose get() swallows DB errors and falls through to
+# the env fallback (service.py wraps the query in try/except). Pointing
+# DATABASE_URL at a throwaway sqlite file means the (missing) settings table is
+# caught instantly and whisper.model_path resolves to the WHISPER_MODEL env the
+# image bakes (/root/whisper.cpp/models/ggml-base.en.bin). /transcribe is gated
+# by verify_app_auth, which validates CC's forwarded app creds against
+# jarvis-auth — service_config.get_auth_url() reads JARVIS_AUTH_BASE_URL at
+# import time (config discovery isn't initialized yet), so the round-trip works.
+#
+# Brought up by .github/workflows/from-source-services.yml with:
+#   docker compose -f docker-compose.ci.yaml \
+#       -f compose/ci-overlays/jarvis-whisper-api-from-source.yaml \
+#       --profile core --profile from-source up -d --wait jarvis-whisper-api
+
+name: jarvis-ci
+
+services:
+  jarvis-whisper-api:
+    profiles: ["from-source"]
+    build:
+      # Default Dockerfile == the CPU build that publishes :dev. It bakes
+      # WHISPER_MODEL=/root/whisper.cpp/models/ggml-base.en.bin and the image's
+      # CMD already runs `uvicorn app.main:app --port ${PORT}` (PORT=7706), so we
+      # don't override it.
+      context: ${WHISPER_SOURCE_PATH:-./_src/jarvis-whisper-api}
+      cache_from:
+        - type=gha
+      cache_to:
+        - type=gha,mode=max
+    environment:
+      # Throwaway sqlite — get() catches the missing-table error and falls back
+      # to WHISPER_MODEL (baked). Avoids the default postgres URL pointing at a
+      # nonexistent jarvis_whisper DB.
+      DATABASE_URL: "sqlite:////tmp/whisper.db"
+      JARVIS_AUTH_BASE_URL: http://jarvis-auth:8000
+      JARVIS_LOG_CONSOLE_LEVEL: INFO
+      PYTHONUNBUFFERED: "1"
+    ports:
+      # Exposed for debugging a failed run; CC reaches whisper over the compose
+      # network by service name.
+      - "7706:7706"
+    depends_on:
+      jarvis-auth:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      # curl is installed in the image. start_period is generous: startup
+      # pre-warms the whisper model (fatal-if-missing) — a CPU load of the baked
+      # ggml-base.en before the service reports healthy.
+      test: ["CMD", "curl", "-sf", "http://localhost:7706/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 40s
+
+  # Repoint command-center at the REAL whisper container. CC resolves the whisper
+  # URL via service discovery (config-service) first, then this env fallback — so
+  # the from-source workflow also re-registers whisper at this container in
+  # config-service via seed.sh's WHISPER_HOST/WHISPER_PORT params. This override
+  # is belt-and-suspenders for the discovery-miss path.
+  jarvis-command-center:
+    environment:
+      JARVIS_WHISPER_URL: http://jarvis-whisper-api:7706
