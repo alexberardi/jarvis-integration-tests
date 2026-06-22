@@ -1,0 +1,241 @@
+{
+  "_meta": {
+    "case_count": 28,
+    "do_not_edit": "Run `python tools/gen_case_catalog.py --write`; CI drift-checks with --check.",
+    "generated_by": "tools/gen_case_catalog.py",
+    "lane_modes": {
+      "always": "cross-repo; runs in BOTH composition and routing mode when the owning from-source service builds",
+      "composition": "cross-repo; MOCK backend only — QA may list these as integration_cases",
+      "fast": "integration-runner fast-lane suite (CASE-0xx/1xx/2xx); runs every integration PR, not resolver-selected",
+      "routing": "cross-repo; REST->cloud backend only (cc+llm + OpenAI key); derived automatically, QA never lists it"
+    },
+    "source": "@pytest.mark.qa_case markers in tests/*.py + tools/resolve_cross_repo.py KNOWN",
+    "spec": "prds/loop-revival-v2/SHARED-SPEC.md §6"
+  },
+  "cases": {
+    "CASE-001": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "Fake LLM emits OpenAI-shaped response for the canned 'plus' prompt.",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_loop_smoke.py::test_fake_llm_returns_canned_completion"
+    },
+    "CASE-002": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "Fake emits the tool_calls payload as a JSON string in content",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_loop_smoke.py::test_fake_llm_emits_tool_call_for_timer_prompt"
+    },
+    "CASE-003": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "fake whisper returns canned transcript for known filename",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_loop_smoke.py::test_fake_whisper_returns_canned_transcript_for_known_filename"
+    },
+    "CASE-101": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "cc health endpoint responds 200",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_real_smoke.py::test_cc_health_endpoint_responds_200"
+    },
+    "CASE-102": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "CC's root path should at minimum return a response (not 5xx).",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_real_smoke.py::test_cc_root_responds"
+    },
+    "CASE-103": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "jarvis-config-service /health responds.",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_real_smoke.py::test_config_service_health_responds"
+    },
+    "CASE-104": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "jarvis-auth /health responds.",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_real_smoke.py::test_auth_service_health_responds"
+    },
+    "CASE-201": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "The app-client seed.sh registered for `command-center` actually",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_real_smoke.py::test_cc_seeded_app_credentials_validate_against_auth"
+    },
+    "CASE-202": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "Positive-path counterpart to CASE-201: a real seeded node + key",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_real_smoke.py::test_cc_seeded_node_validates_against_auth"
+    },
+    "CASE-203": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "First test that goes *through* CC with a real node X-API-Key.",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_real_smoke.py::test_cc_conversation_start_with_node_creds"
+    },
+    "CASE-204": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "First test that exercises CC's voice command pipeline through the",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_real_smoke.py::test_cc_voice_command_returns_tool_calls"
+    },
+    "CASE-205": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "First end-to-end coverage of the tool-execution continuation loop.",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_real_smoke.py::test_cc_continue_with_tool_results"
+    },
+    "CASE-206": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "End-to-end audio path: streaming continuation produces PCM bytes.",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_real_smoke.py::test_cc_continue_stream_returns_audio"
+    },
+    "CASE-207": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "Wake-acknowledge is a deliberately-fast no-LLM keyword match.",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_real_smoke.py::test_cc_voice_acknowledge_returns_text"
+    },
+    "CASE-208": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "CC's media proxy forwards audio uploads to jarvis-whisper-api",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_real_smoke.py::test_cc_media_whisper_transcribe_proxies"
+    },
+    "CASE-209": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "`/voice/command/stream`'s 200 audio path — the conversational",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_real_smoke.py::test_cc_voice_command_returns_audio_for_complete_response"
+    },
+    "CASE-210": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "The validation_required branch — CC asks the user to clarify.",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_real_smoke.py::test_cc_voice_command_returns_validation_request"
+    },
+    "CASE-211": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "Multi-tool flow — when the LLM emits 2+ tool_calls in one",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_real_smoke.py::test_cc_voice_command_returns_multi_tool_calls"
+    },
+    "CASE-212": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "First test that exercises the server→node async channel (MQTT).",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_real_smoke.py::test_cc_publishes_to_mqtt_on_settings_request"
+    },
+    "CASE-213": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "Mixed server+client tool branch — CC runs the server tool,",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_real_smoke.py::test_cc_voice_command_mixed_tools_iterates"
+    },
+    "CASE-214": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "Factory-reset is the highest-blast-radius MQTT publish surface.",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_real_smoke.py::test_cc_publishes_to_mqtt_on_factory_reset"
+    },
+    "CASE-215": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "Package-install MQTT — the Pantry integration channel.",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_real_smoke.py::test_cc_publishes_to_mqtt_on_package_install"
+    },
+    "CASE-301": {
+      "gating": "always (both modes) when jarvis-llm-proxy-api builds from source",
+      "intent": "GET /health on the from-source proxy API.",
+      "lane": "cross-repo",
+      "mode": "always",
+      "repo": "jarvis-llm-proxy-api",
+      "test": "tests/test_from_source_services.py::test_real_llm_proxy_health_reaches_model_service"
+    },
+    "CASE-302": {
+      "gating": "composition-mode only (MOCK backend) when jarvis-llm-proxy-api builds from source",
+      "intent": "POST /v1/chat/completions on the from-source proxy (app-auth'd).",
+      "lane": "cross-repo",
+      "mode": "composition",
+      "repo": "jarvis-llm-proxy-api",
+      "test": "tests/test_from_source_services.py::test_real_proxy_chat_completions_contract_mock_backend"
+    },
+    "CASE-311": {
+      "gating": "always (both modes) when jarvis-tts builds from source",
+      "intent": "CC /voice/command/stream \"hello jarvis\" -> real Piper synthesis.",
+      "lane": "cross-repo",
+      "mode": "always",
+      "repo": "jarvis-tts",
+      "test": "tests/test_from_source_services.py::test_cc_voice_stream_through_real_tts_produces_real_audio"
+    },
+    "CASE-321": {
+      "gating": "always (both modes) when jarvis-whisper-api builds from source",
+      "intent": "CC /media/whisper/transcribe -> real whisper -> {text, segments, speaker}.",
+      "lane": "cross-repo",
+      "mode": "always",
+      "repo": "jarvis-whisper-api",
+      "test": "tests/test_from_source_services.py::test_cc_media_transcribe_through_real_whisper_returns_contract"
+    },
+    "CASE-401": {
+      "gating": "cross-repo composition signal — runs when >=2 from-source services build together",
+      "intent": "cc and llm proxy compose as a unit",
+      "lane": "cross-repo",
+      "mode": "composition",
+      "repo": null,
+      "test": "tests/test_cross_repo_services.py::test_cc_and_llm_proxy_compose_as_a_unit"
+    },
+    "CASE-402": {
+      "gating": "routing-mode only — cc+llm both build from source AND an OpenAI key is present",
+      "intent": "One unambiguous utterance through CC's real native tool path.",
+      "lane": "cross-repo",
+      "mode": "routing",
+      "repo": null,
+      "test": "tests/test_cross_repo_services.py::test_cc_routes_voice_through_from_source_proxy_to_cloud"
+    }
+  }
+}
