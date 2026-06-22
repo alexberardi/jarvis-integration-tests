@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "case_count": 28,
+    "case_count": 33,
     "do_not_edit": "Run `python tools/gen_case_catalog.py --write`; CI drift-checks with --check.",
     "generated_by": "tools/gen_case_catalog.py",
     "lane_modes": {
@@ -188,6 +188,46 @@
       "mode": "fast",
       "repo": null,
       "test": "tests/test_cc_real_smoke.py::test_cc_publishes_to_mqtt_on_package_install"
+    },
+    "CASE-216": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "CC /conversation/start with a well-formed but unknown node key -> 401.",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_auth_contracts.py::test_cc_rejects_bogus_node_credentials_with_401"
+    },
+    "CASE-217": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "CC /conversation/start with a no-colon (legacy-shaped) key -> 401.",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_auth_contracts.py::test_cc_rejects_malformed_api_key_with_401"
+    },
+    "CASE-218": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "CC POST /admin/nodes with a wrong admin key -> 401.",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_auth_contracts.py::test_cc_admin_endpoint_rejects_wrong_admin_key_with_401"
+    },
+    "CASE-219": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "auth /internal/validate-node with a WRONG app key -> 401.",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_auth_contracts.py::test_auth_validate_node_rejects_bad_app_key_with_401"
+    },
+    "CASE-220": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "auth /internal/validate-node with NO app headers -> 401.",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_auth_contracts.py::test_auth_validate_node_rejects_missing_app_headers_with_401"
     },
     "CASE-301": {
       "gating": "always (both modes) when jarvis-llm-proxy-api builds from source",
