@@ -1,0 +1,38 @@
+name: Unit (resolver + CASE catalog)
+
+# The repo's first PR-gated unit lane: stdlib-only tests for the cross-repo
+# resolver (tools/resolve_cross_repo.py) and the CASE-catalog generator
+# (tools/gen_case_catalog.py), plus a DRIFT CHECK that the committed
+# tests/CASE_CATALOG.json is exactly what the generator produces from the live
+# @pytest.mark.qa_case markers + the resolver KNOWN map. No service stack, no
+# Docker — fast + free, gates every PR. (The integration / cross-repo / behavior
+# lanes stay dispatch/scheduled; they need the full stack + secrets.)
+#
+# The catalog is the join the agentic dev-loop's QA + engineering personas read
+# (prds/loop-revival-v2/SHARED-SPEC.md §6). If a contributor adds/removes a
+# @pytest.mark.qa_case marker or edits the resolver KNOWN map without
+# regenerating the catalog, this lane goes red with the exact fix command.
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pytest (stdlib-only tests need nothing else)
+        run: python -m pip install --upgrade pip pytest
+      - name: Resolver + catalog-generator unit tests
+        run: python -m pytest tests/test_resolve_cross_repo.py tests/test_gen_case_catalog.py -v
+      - name: CASE catalog is up to date (drift check)
+        run: python tools/gen_case_catalog.py --check
