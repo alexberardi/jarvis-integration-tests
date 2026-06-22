@@ -6,13 +6,16 @@
 # /v1/chat/completions contract CC depends on for every voice command — end to
 # end through the real container, not the host fake.
 #
-# Unlike the behavior overlay (llm-proxy-behavior.yaml, which points `live` at a
-# cloud model via REST and needs an OPENAI_API_KEY), this lane uses the MOCK
-# backend: no model weights, no key, deterministic. The MOCK backend echoes a
-# fixed string with tool_calls=None (backends/mock_backend.py), so this lane
-# proves the CONTRACT + WIRING (auth round-trip, API->model-service internal
-# proxy, OpenAI response shaping, MOCK passthrough), NOT tool routing — that's
-# the behavior lane's job. The two are complementary.
+# Backend is env-driven (default MOCK). In the T9 from-source lane and the T10
+# cross-repo COMPOSITION case (CASE-401) it uses the MOCK backend: no weights, no
+# key, deterministic. The MOCK backend echoes a fixed string with tool_calls=None
+# (backends/mock_backend.py), so it proves the CONTRACT + WIRING (auth round-trip,
+# API->model-service internal proxy, OpenAI response shaping, MOCK passthrough),
+# NOT tool routing. The T10 cross-repo ROUTING variant (CASE-402, key-gated) sets
+# LLM_PROXY_FS_BACKEND=REST + OPENAI_API_KEY so this SAME from-source build points
+# `live` at a cloud model (gpt-4.1-nano) — same trick as llm-proxy-behavior.yaml,
+# but built from the PR's source instead of the :dev-cpu image. The two modes are
+# mutually exclusive per bring-up (the backend is one or the other).
 #
 # Mirrors the two-process split from llm-proxy-behavior.yaml (one CPU image, two
 # uvicorn entrypoints): the model service owns the backend; the stateless API
@@ -43,15 +46,30 @@ services:
     # service directly. WORKDIR is /app, so services.model_service:app resolves.
     command: ["python", "-m", "uvicorn", "services.model_service:app", "--host", "0.0.0.0", "--port", "7705"]
     environment:
-      # ---- live == background == MOCK: no weights, no key, deterministic ----
+      # ---- backend defaults to MOCK (no weights, no key, deterministic) ----
       # model_manager reads these env fallbacks when no settings DB is present
       # (_create_backend: backend_type=="MOCK" -> MockBackend(model_path or
       # f"mock-{model_type}"), so no real path is required). Setting both aliases
-      # to MOCK makes them resolve to a single shared instance.
-      JARVIS_LIVE_MODEL_BACKEND: MOCK
-      JARVIS_BACKGROUND_MODEL_BACKEND: MOCK
-      JARVIS_LIVE_MODEL_NAME: mock
-      JARVIS_BACKGROUND_MODEL_NAME: mock
+      # the same makes them resolve to a single shared instance.
+      #
+      # The T9 from-source lane (from-source-services.yml) leaves LLM_PROXY_FS_*
+      # unset -> MOCK, unchanged. The T10 cross-repo lane's key-gated ROUTING
+      # variant (CASE-402) sets LLM_PROXY_FS_BACKEND=REST + LLM_PROXY_FS_MODEL_NAME
+      # + OPENAI_API_KEY so the SAME from-source build serves a real cloud model
+      # (gpt-4.1-nano) — no separate overlay. The REST_* keys below are only
+      # consulted when backend==REST; they're harmless/ignored under MOCK.
+      JARVIS_LIVE_MODEL_BACKEND: ${LLM_PROXY_FS_BACKEND:-MOCK}
+      JARVIS_BACKGROUND_MODEL_BACKEND: ${LLM_PROXY_FS_BACKEND:-MOCK}
+      JARVIS_LIVE_MODEL_NAME: ${LLM_PROXY_FS_MODEL_NAME:-mock}
+      JARVIS_BACKGROUND_MODEL_NAME: ${LLM_PROXY_FS_MODEL_NAME:-mock}
+      # REST -> cloud config (mirrors llm-proxy-behavior.yaml). OPENAI_API_KEY is
+      # empty unless the routing variant injects it; under MOCK these go unread.
+      JARVIS_LIVE_REST_MODEL_URL: ${LLM_PROXY_FS_REST_URL:-https://api.openai.com}
+      JARVIS_REST_PROVIDER: openai
+      JARVIS_REST_REQUEST_FORMAT: openai
+      JARVIS_REST_AUTH_TYPE: bearer
+      JARVIS_REST_AUTH_TOKEN: ${OPENAI_API_KEY:-}
+      JARVIS_REST_MODEL_NAME: ${LLM_PROXY_FS_MODEL_NAME:-mock}
       # Internal-token guard for /internal/model/* — must match the API server.
       MODEL_SERVICE_TOKEN: ci-internal-token
       # Placeholders so the import chain (settings/pipeline routes resolve an auth

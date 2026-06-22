@@ -516,7 +516,7 @@ One marker per test. Only the first is captured by the conftest hook.
 | `originating_repo` | yes | Full `owner/name`. |
 | `qa_plan_comment_id` | no | Reserved for v2.5+ — the roadmap-issue comment ID containing the `<!-- qa-test-plan:v1 -->` body. |
 | `plan_cases` | no | Comma-separated CASE-IDs. Defaults to all 22 known cases. |
-| `linked_prs` | no | JSON map of `{repo_name: branch_or_sha}` for cross-service PR deps. Empty `{}` default; not consumed yet. |
+| `linked_prs` | no | JSON map of `{repo_name: branch_or_sha}` for cross-service PR deps. **Consumed by the cross-repo lane (T10)** — `cross-repo-services.yml` checks out each listed repo at its ref and builds it from source alongside the originator. Empty `{}` = single-service lane behavior. |
 
 ### Sentinel comments
 
@@ -833,8 +833,12 @@ gh pr view <pr> --repo alexberardi/<service> --json statusCheckRollup \
 11. **No incremental test selection.** Every run executes every test.
 12. **Failure excerpt is truncated** to 240 chars in the comment. Full
     stack traces only in the CI run logs.
-13. **`linked_prs` plumbed through but not consumed.** When v2.5+ lands
-    a multi-service-PR test scenario, build steps will read it.
+13. **`linked_prs` IS consumed — by the cross-repo lane (T10).**
+    `cross-repo-services.yml` + `tools/resolve_cross_repo.py` build
+    `{originating} ∪ keys(linked_prs)` from source together and run the
+    cross-repo case(s) (see the README's "Cross-repo lane (T10)" section).
+    `repository_dispatch` still only fires on the default branch, so iterate
+    that runner via `gh workflow run cross-repo-services.yml --ref <branch> -f …`.
 14. **`compose down -v` between runs** wipes all the seed data, so
     every PR run re-seeds. That's the right behavior for isolation but
     could be optimized in v3 with a snapshotted Postgres volume.

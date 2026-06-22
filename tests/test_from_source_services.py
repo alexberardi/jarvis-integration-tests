@@ -130,6 +130,13 @@ def test_real_llm_proxy_health_reaches_model_service():
 # --------------------------------------------------------------------------- #
 @pytest.mark.skipif(not LLM_PROXY_URL, reason="LLM_PROXY_URL unset — llm-proxy not built from source")
 @pytest.mark.skipif(not LLM_PROXY_APP_KEY, reason="LLM_PROXY_APP_KEY unset — seed app key not passed")
+# T10: the cross-repo lane's key-gated ROUTING variant runs the proxy on the REST
+# backend (-> a real cloud model), where this case's "mock" echo assertion can't
+# hold. No-op for the T9 from-source lane, which never sets CROSS_REPO_ROUTING.
+@pytest.mark.skipif(
+    bool(os.environ.get("CROSS_REPO_ROUTING")),
+    reason="cross-repo routing mode uses the REST backend; the MOCK-echo assertion is N/A",
+)
 @pytest.mark.qa_case("CASE-302")
 def test_real_proxy_chat_completions_contract_mock_backend():
     """POST /v1/chat/completions on the from-source proxy (app-auth'd).

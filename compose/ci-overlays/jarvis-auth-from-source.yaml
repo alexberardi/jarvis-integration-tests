@@ -14,6 +14,10 @@ name: jarvis-ci
 
 services:
   jarvis-auth:
+    # Force the build on a plain `up`: image+build coexist (base keeps :dev), and
+    # `docker compose up` without --build PULLS the pullable :dev tag and skips
+    # the build, silently testing :dev not the PR. See T10 / the CC overlay note.
+    pull_policy: build
     build:
       context: ${AUTH_SOURCE_PATH:-./_src/jarvis-auth}
       cache_from:

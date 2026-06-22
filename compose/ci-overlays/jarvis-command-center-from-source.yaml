@@ -16,6 +16,15 @@ services:
   jarvis-command-center:
     # When overriding `image:` with `build:` in a compose overlay, Docker
     # uses the build output and ignores the original image reference.
+    #
+    # pull_policy: build is REQUIRED, not cosmetic. The base service keeps
+    # `image: ghcr.io/...:dev`; when image AND build coexist, `docker compose up`
+    # (without --build) PULLS the :dev image and SKIPS the build whenever the tag
+    # is pullable (verified on compose v5.1.3) — silently testing :dev instead of
+    # the PR's source. `pull_policy: build` forces the build on a plain `up`, so
+    # both this lane and the integration-runner fast lane (plain `up`, no --build)
+    # actually build the checked-out PR. See T10.
+    pull_policy: build
     build:
       context: ${CC_SOURCE_PATH:-./_src/jarvis-command-center}
       # Buildx GHA cache: cold ~3 min build collapses to ~30s on warm
