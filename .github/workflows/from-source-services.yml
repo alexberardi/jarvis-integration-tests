@@ -254,6 +254,10 @@ jobs:
           CC_URL: http://localhost:7703
           CC_NODE_ID: ${{ env.CC_NODE_ID }}
           CC_NODE_KEY: ${{ env.CC_NODE_KEY }}
+          # CASE-302 hits the proxy's app-auth'd /v1/chat/completions with CC's
+          # seeded app credentials (only consumed by the llm-proxy lane).
+          LLM_PROXY_APP_ID: command-center
+          LLM_PROXY_APP_KEY: ${{ env.CC_APP_KEY }}
         run: |
           export ${{ steps.r.outputs.test_env }}
           pytest tests/test_from_source_services.py \
@@ -334,4 +338,9 @@ jobs:
         run: |
           docker compose -f docker-compose.ci.yaml -f ${{ steps.r.outputs.overlay }} \
             --profile core --profile from-source down -v --remove-orphans || true
-          kill "${FAKE_LLM_PID:-0}" "${FAKE_WHISPER_PID:-0}" "${FAKE_TTS_PID:-0}" 2>/dev/null || true
+          # Kill only the fakes that were actually started. Each lane starts just
+          # two of the three, so the unset PID must NOT default to 0 — `kill 0`
+          # signals the whole process group and SIGTERMs this step itself (143).
+          for pid in "${FAKE_LLM_PID:-}" "${FAKE_WHISPER_PID:-}" "${FAKE_TTS_PID:-}"; do
+            [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+          done
