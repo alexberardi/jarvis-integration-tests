@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "case_count": 38,
+    "case_count": 41,
     "do_not_edit": "Run `python tools/gen_case_catalog.py --write`; CI drift-checks with --check.",
     "generated_by": "tools/gen_case_catalog.py",
     "lane_modes": {
@@ -252,6 +252,30 @@
       "mode": "fast",
       "repo": null,
       "test": "tests/test_cc_auth_contracts.py::test_cc_factory_reset_rejects_missing_authorization_with_401"
+    },
+    "CASE-224": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "CC /voice/command/stream on a never-started conversation -> 400.",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_request_contracts.py::test_cc_voice_stream_rejects_unstarted_conversation_with_400"
+    },
+    "CASE-225": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "CC /voice/command (blocking) on a never-started conversation -> 400.",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_request_contracts.py::test_cc_voice_command_rejects_unstarted_conversation_with_400"
+    },
+    "CASE-226": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "CC returns its custom 400 `validation_error` envelope on a malformed body.",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_request_contracts.py::test_cc_returns_structured_400_envelope_on_malformed_body"
     },
     "CASE-301": {
       "gating": "always (both modes) when jarvis-llm-proxy-api builds from source",
