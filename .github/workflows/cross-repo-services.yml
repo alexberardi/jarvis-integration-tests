@@ -1,0 +1,413 @@
+name: Cross-repo services (T10)
+
+# T10 — validate a multi-repo feature as ONE unit. The original autonomous loop
+# paused because the atomic unit of work was a single-repo PR, but real Jarvis
+# features span repos. This lane builds the SET {originating} ∪ keys(linked_prs)
+# from source TOGETHER in one stack and runs the cross-repo case(s), so a
+# coordinated change (e.g. a command-center PR + a matching llm-proxy PR) is
+# tested as a coherent feature instead of each side seeing only its own units.
+#
+# Generalizes the T9 from-source lane (from-source-services.yml) from one service
+# to N, driven by the `linked_prs` map. tools/resolve_cross_repo.py folds the
+# originating PR into the map, validates names against the six from-source
+# overlays, and emits the composed overlay -f chain, the per-repo checkout list,
+# the seed.sh discovery overrides, the host-fake skip flags, and the plan-case
+# sets. The existing fast / behavior / from-source lanes are untouched.
+#
+# Two mutually-exclusive modes per run (the llm-proxy backend is one or the
+# other):
+#   * COMPOSITION (default, NO key) — CASE-401: a direct app-auth'd plain /v1/chat
+#     to the from-source proxy on the MOCK backend with CC's seeded creds. Proves
+#     both PR builds boot + the cross-service credential chain + the API->model
+#     hop. No OPENAI_API_KEY needed.
+#   * ROUTING (key-gated) — CASE-402: when CC + llm-proxy both build AND an
+#     OPENAI_API_KEY is set, the from-source proxy runs the REST backend ->
+#     gpt-4.1-nano and CC routes a real voice command through its real
+#     ChatGPTOpenAI native-tool path. The fuller cross-repo behavior signal.
+#
+# Triggers:
+#   * workflow_dispatch — manual validation (no PR needed). repository_dispatch
+#     only fires on the DEFAULT branch, so iterate this runner via
+#     `gh workflow run cross-repo-services.yml --ref <branch> -f ...`.
+#   * repository_dispatch [cross-repo-integration] — fired by a service repo's
+#     cross-repo-trigger.yml when a PR body carries `Linked-PR:` markers.
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "Originating service slug (e.g. jarvis-command-center)"
+        required: true
+      source_ref:
+        description: "Originating ref (sha/branch)"
+        required: true
+        default: "main"
+      linked_prs:
+        description: 'JSON map {repo: ref}, e.g. {"jarvis-llm-proxy-api":"main"}'
+        required: false
+        default: "{}"
+      pr_number:
+        description: "Optional PR number to post results on"
+        required: false
+        default: ""
+      originating_repo:
+        description: "Full owner/name of the originating PR repo"
+        required: false
+        default: ""
+  repository_dispatch:
+    types: [cross-repo-integration]
+
+concurrency:
+  # Dedup symmetric triggers: both PRs of a coordinated feature compute the SAME
+  # sorted feature_key (union of participant slugs), so they share this group and
+  # cancel-in-progress keeps one run for the feature. Manual runs fall back to
+  # the per-(service,ref,pr) key.
+  group: cross-repo-${{ github.event.client_payload.feature_key || format('{0}-{1}-{2}', inputs.service, inputs.source_ref, inputs.pr_number) }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  cross-repo:
+    runs-on: ubuntu-latest
+    # Two cold from-source builds in one job (CC + llm-proxy). The buildx GHA
+    # cache collapses warm runs; whisper's C++ compile is the slow tail.
+    timeout-minutes: 40
+    env:
+      # Empty unless the secret is set -> the routing variant stays off and the
+      # MOCK composition case runs instead. Interpolated into the llm-proxy
+      # overlay's JARVIS_REST_AUTH_TOKEN at compose time when routing is on.
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve cross-repo set
+        id: r
+        # Route the untrusted client_payload / inputs through env (NEVER inline
+        # ${{ }} into the bash body) so a ref can't break quoting or inject.
+        env:
+          EV: ${{ github.event_name }}
+          P_SERVICE: ${{ github.event.client_payload.service }}
+          P_REF: ${{ github.event.client_payload.head_sha || github.event.client_payload.source_ref }}
+          P_LINKED: ${{ github.event.client_payload.linked_prs }}
+          P_PR: ${{ github.event.client_payload.pr_number }}
+          P_ORIG: ${{ github.event.client_payload.originating_repo }}
+          I_SERVICE: ${{ inputs.service }}
+          I_REF: ${{ inputs.source_ref }}
+          I_LINKED: ${{ inputs.linked_prs }}
+          I_PR: ${{ inputs.pr_number }}
+          I_ORIG: ${{ inputs.originating_repo }}
+        run: |
+          set -euo pipefail
+          if [ "$EV" = "repository_dispatch" ]; then
+            SERVICE="$P_SERVICE"; REF="$P_REF"; LINKED="$P_LINKED"; PR="$P_PR"; ORIG="$P_ORIG"
+          else
+            SERVICE="$I_SERVICE"; REF="$I_REF"; LINKED="$I_LINKED"; PR="$I_PR"; ORIG="$I_ORIG"
+          fi
+          [ -z "$LINKED" ] && LINKED="{}"
+          [ -z "$REF" ] && REF="main"
+          [ -z "$ORIG" ] && ORIG="alexberardi/${SERVICE}"
+          echo "Resolving cross-repo set: service=$SERVICE ref=$REF linked_prs=$LINKED"
+          # Emits overlay_flags / up_non_cc / seed_env / test_env / fake flags /
+          # plan_cases{,_routing} / routing_possible / checkout_json to GITHUB_OUTPUT.
+          # Fails fast (::error::) on an unknown repo or bad JSON.
+          python tools/resolve_cross_repo.py \
+            --service "$SERVICE" --source-ref "$REF" --linked-prs "$LINKED"
+          { echo "pr_number=$PR"; echo "originating_repo=$ORIG"; } >> "$GITHUB_OUTPUT"
+
+      - name: Determine run mode (composition vs key-gated routing)
+        run: |
+          set -euo pipefail
+          ROUTING=false
+          if [ -n "${OPENAI_API_KEY:-}" ] && [ "${{ steps.r.outputs.routing_possible }}" = "true" ]; then
+            ROUTING=true
+          fi
+          echo "ROUTING_MODE=$ROUTING" >> "$GITHUB_ENV"
+          if [ "$ROUTING" = "true" ]; then
+            echo "Mode: ROUTING (REST -> gpt-4.1-nano; CASE-402)"
+            # These env vars flow into the llm-proxy from-source overlay's compose
+            # interpolation (Phase 1.5) so the SAME build serves a cloud model.
+            {
+              echo "LLM_PROXY_FS_BACKEND=REST"
+              echo "LLM_PROXY_FS_MODEL_NAME=gpt-4.1-nano-2025-04-14"
+              echo "CROSS_REPO_ROUTING=1"
+              echo "CROSS_PLAN=${{ steps.r.outputs.plan_cases_routing }}"
+            } >> "$GITHUB_ENV"
+          else
+            echo "Mode: COMPOSITION (MOCK backend; CASE-401)"
+            echo "CROSS_PLAN=${{ steps.r.outputs.plan_cases }}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-cross-repo-${{ hashFiles('requirements-ci.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-cross-repo-
+            ${{ runner.os }}-pip-
+
+      - name: Install test-client dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-ci.txt
+
+      - name: Check out each from-source repo (branch OR sha)
+        env:
+          # checkout_json holds only resolver-validated slugs; route via env, not
+          # inline ${{ }}, to keep an injected ref out of the script body.
+          CHECKOUT_JSON: ${{ steps.r.outputs.checkout_json }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # actions/checkout can't take a runtime list, so clone each PUBLIC repo.
+          # branch-OR-sha: clone (blobless) then fetch+checkout the exact ref —
+          # `clone --branch <sha>` fails on a bare SHA, this resolves both.
+          printf '%s' "$CHECKOUT_JSON" \
+            | python3 -c 'import json,sys; [print(c["repo"]+"\t"+c["ref"]+"\t"+c["path"]) for c in json.load(sys.stdin)]' \
+            | while IFS=$'\t' read -r repo ref path; do
+                echo "::group::clone $repo @ $ref -> $path"
+                git clone --filter=blob:none \
+                  "https://x-access-token:${GH_TOKEN}@github.com/alexberardi/${repo}.git" "$path" \
+                  || { echo "::error::clone failed for $repo"; exit 1; }
+                git -C "$path" fetch --depth 1 origin "$ref" \
+                  && git -C "$path" checkout -q FETCH_HEAD \
+                  || git -C "$path" checkout -q "$ref" \
+                  || { echo "::error::ref '$ref' not resolvable in $repo"; exit 1; }
+                echo "$repo @ $(git -C "$path" rev-parse --short HEAD)"
+                echo "::endgroup::"
+              done
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Start the remaining host fakes
+        run: |
+          # Start a fake ONLY for a service NOT built from source (else its port
+          # collides with the real container's host mapping). Loop over non-empty
+          # PIDs at teardown — never `kill 0` (self-SIGTERM).
+          if [ "${{ steps.r.outputs.start_fake_llm }}" = "true" ]; then
+            nohup python -m tests.fakes.fake_llm_backend --port 7705 > /tmp/fake_llm.log 2>&1 &
+            echo "FAKE_LLM_PID=$!" >> "$GITHUB_ENV"
+          fi
+          if [ "${{ steps.r.outputs.start_fake_whisper }}" = "true" ]; then
+            nohup python -m tests.fakes.fake_whisper --port 7706 > /tmp/fake_whisper.log 2>&1 &
+            echo "FAKE_WHISPER_PID=$!" >> "$GITHUB_ENV"
+          fi
+          if [ "${{ steps.r.outputs.start_fake_tts }}" = "true" ]; then
+            nohup python -m tests.fakes.fake_tts --port 7707 > /tmp/fake_tts.log 2>&1 &
+            echo "FAKE_TTS_PID=$!" >> "$GITHUB_ENV"
+          fi
+          sleep 3
+          echo "Fakes: llm=${{ steps.r.outputs.start_fake_llm }} whisper=${{ steps.r.outputs.start_fake_whisper }} tts=${{ steps.r.outputs.start_fake_tts }}"
+
+      - name: Phase 1 — bring up deps (postgres + auth + config-service + mqtt)
+        run: |
+          # --build so an auth/config-service in the from-source set builds from
+          # source (pull_policy: build in their overlays also enforces this).
+          docker compose -f docker-compose.ci.yaml ${{ steps.r.outputs.overlay_flags }} \
+            --profile core --profile from-source up -d --wait --build \
+            postgres jarvis-auth jarvis-config-service mosquitto
+
+      - name: Seed auth + config-service (point discovery at the real services)
+        env:
+          AUTH_URL: http://localhost:7701
+          CONFIG_URL: http://localhost:7700
+          AUTH_ADMIN_TOKEN: ci-auth-admin-token
+          CONFIG_ADMIN_TOKEN: ci-auth-admin-token
+        run: |
+          # seed_env points each from-source service's discovery row at its real
+          # container (e.g. LLM_PROXY_HOST=jarvis-llm-proxy-api); unset services
+          # stay at the host fakes. Empty seed_env -> seed.sh's defaults.
+          export ${{ steps.r.outputs.seed_env }}
+          bash compose/seed.sh
+
+      - name: Phase 1.5 — build + bring up the add-container services
+        if: ${{ steps.r.outputs.up_non_cc != '' }}
+        run: |
+          # The llm-proxy/whisper/tts containers in the set. In routing mode the
+          # LLM_PROXY_FS_BACKEND=REST + OPENAI_API_KEY env (set above) interpolate
+          # into the llm-proxy overlay here.
+          docker compose -f docker-compose.ci.yaml ${{ steps.r.outputs.overlay_flags }} \
+            --profile core --profile from-source up -d --wait --build \
+            ${{ steps.r.outputs.up_non_cc }}
+          docker compose -f docker-compose.ci.yaml ${{ steps.r.outputs.overlay_flags }} ps
+
+      - name: Phase 2 — bring up CC (built from source when in the set)
+        env:
+          JARVIS_CC_APP_KEY: ${{ env.JARVIS_CC_APP_KEY }}
+        run: |
+          # --build is REQUIRED: the CC overlay keeps image: alongside build:, and
+          # a plain `up` PULLS :dev instead of building the PR (verified). The
+          # overlay's pull_policy: build is the belt; --build is the suspenders.
+          docker compose -f docker-compose.ci.yaml ${{ steps.r.outputs.overlay_flags }} \
+            --profile core --profile from-source up -d --wait --build \
+            jarvis-command-center
+          docker compose -f docker-compose.ci.yaml ${{ steps.r.outputs.overlay_flags }} ps
+
+      - name: Phase 2.5 — register node in CC
+        env:
+          CC_URL: http://localhost:7703
+          CC_ADMIN_KEY: ci-admin-key
+          CC_HOUSEHOLD_ID: ${{ env.CC_HOUSEHOLD_ID }}
+        run: |
+          set -e
+          NODE_ID="ci-node-001"
+          BODY="{\"node_id\":\"$NODE_ID\",\"household_id\":\"$CC_HOUSEHOLD_ID\",\"room\":\"ci-room\",\"name\":\"CI Node\"}"
+          RESP_FILE=/tmp/cc_node_resp.json
+          STATUS=$(curl -sS -o "$RESP_FILE" -w "%{http_code}" -X POST \
+            "$CC_URL/api/v0/admin/nodes" \
+            -H "X-API-Key: $CC_ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$BODY")
+          if [[ "$STATUS" -lt 200 || "$STATUS" -ge 300 ]]; then
+            echo "::error::CC /admin/nodes failed: HTTP $STATUS"
+            cat "$RESP_FILE"
+            exit 1
+          fi
+          CC_NODE_KEY=$(python3 -c "import json; print(json.load(open('$RESP_FILE'))['node_key'])")
+          {
+            echo "CC_NODE_ID=$NODE_ID"
+            echo "CC_NODE_KEY=$CC_NODE_KEY"
+          } >> "$GITHUB_ENV"
+
+      - name: Phase 2.6 — flip CC llm.interface to ChatGPTOpenAI (routing only)
+        if: ${{ env.ROUTING_MODE == 'true' }}
+        env:
+          CC_URL: http://localhost:7703
+          CC_USER_JWT: ${{ env.CC_USER_JWT }}
+        run: |
+          # llm.interface is a DB-only setting (no env fallback), default
+          # Qwen25MediumUntrained. Flipping it to the native-tool provider is what
+          # makes CC send tools via the OpenAI `tools` param (not json_object) so
+          # the cloud model can route. get_model_service() reads it live per request.
+          set -e
+          STATUS=$(curl -sS -o /tmp/set_iface.json -w "%{http_code}" -X PUT \
+            "$CC_URL/settings/llm.interface" \
+            -H "Authorization: Bearer $CC_USER_JWT" \
+            -H "Content-Type: application/json" \
+            -d '{"value":"ChatGPTOpenAI"}')
+          echo "PUT /settings/llm.interface -> HTTP $STATUS: $(cat /tmp/set_iface.json)"
+          if [[ "$STATUS" -lt 200 || "$STATUS" -ge 300 ]]; then
+            echo "::error::Failed to set llm.interface=ChatGPTOpenAI (HTTP $STATUS)"
+            exit 1
+          fi
+          curl -sS -X POST "$CC_URL/settings/invalidate-cache" \
+            -H "Authorization: Bearer $CC_USER_JWT" -o /dev/null \
+            && echo "settings cache invalidated" \
+            || echo "::warning::invalidate-cache failed (non-fatal)"
+
+      - name: Run cross-repo cases
+        id: pytest
+        continue-on-error: true
+        env:
+          CC_URL: http://localhost:7703
+          CC_NODE_ID: ${{ env.CC_NODE_ID }}
+          CC_NODE_KEY: ${{ env.CC_NODE_KEY }}
+          # CASE-401 reuses CC's seeded app key (the credential-chain probe).
+          LLM_PROXY_APP_ID: command-center
+          LLM_PROXY_APP_KEY: ${{ env.CC_APP_KEY }}
+        run: |
+          # test_env carries the CROSS_REPO_* gates + LLM_PROXY_URL + *_FROM_SOURCE.
+          # CROSS_REPO_ROUTING (set in routing mode) flips which mode-specific cases
+          # run vs skip. Run both the T9 and cross-repo files; the skipif gates pick
+          # the right subset for the resolved set + mode.
+          export ${{ steps.r.outputs.test_env }}
+          pytest tests/test_from_source_services.py tests/test_cross_repo_services.py \
+            --junit-xml=results.xml --tb=short -v
+
+      - name: Parse results into JSON
+        if: always()
+        run: |
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          if [[ ! -f results.xml ]]; then
+            echo '<?xml version="1.0"?><testsuites/>' > results.xml
+          fi
+          # CROSS_PLAN is the mode-selected plan (composition vs routing). A
+          # planned-but-absent case is reported not-implemented (fails the job).
+          python tools/parse_junit.py results.xml \
+            --plan-cases "${{ env.CROSS_PLAN }}" --run-url "$RUN_URL" --output results.json
+          cat results.json
+
+      - name: Post results to originating PR
+        if: ${{ always() && steps.r.outputs.pr_number != '' && steps.r.outputs.originating_repo != '' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.INTEGRATION_COMMENT_TOKEN }}
+          ORIGINATING_REPO: ${{ steps.r.outputs.originating_repo }}
+          PR_NUMBER: ${{ steps.r.outputs.pr_number }}
+          FROM_SOURCE_NAMES: ${{ steps.r.outputs.from_source_names }}
+          ROUTING_MODE: ${{ env.ROUTING_MODE }}
+        run: |
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "::warning::INTEGRATION_COMMENT_TOKEN not set; skipping PR comment"
+            exit 0
+          fi
+          python <<'PYEOF' > comment.md
+          import json, os
+          d = json.load(open("results.json")); s = d["summary"]
+          mode = "routing (REST -> gpt-4.1-nano)" if os.environ.get("ROUTING_MODE") == "true" else "composition (MOCK)"
+          print("<!-- cross-repo-test-results:v1 -->")
+          print("## Cross-repo integration results")
+          print()
+          print(f"**Built from source together:** `{os.environ.get('FROM_SOURCE_NAMES','')}`  ")
+          print(f"**Mode:** {mode}")
+          print()
+          print(f"**{s['pass']} pass | {s['fail']} fail | {s['skipped']} skipped | {s['not_implemented']} not-implemented** (of {s['total']})")
+          print()
+          print("| Case | Status | Test |")
+          print("| --- | --- | --- |")
+          for cid, info in sorted(d["cases"].items()):
+              print(f"| `{cid}` | {info['status']} | `{info['test_name'] or '(no test bound)'}` |")
+          print()
+          print(f"[CI run]({d['run_url']})")
+          PYEOF
+          gh pr comment "$PR_NUMBER" --repo "$ORIGINATING_REPO" --body-file comment.md || echo "::warning::comment post failed"
+
+      - name: Fail the job if any case failed
+        if: always()
+        run: |
+          FAIL=$(python -c "import json; print(json.load(open('results.json'))['summary']['fail'])")
+          NOT_IMPL=$(python -c "import json; print(json.load(open('results.json'))['summary']['not_implemented'])")
+          echo "fail=$FAIL not_implemented=$NOT_IMPL"
+          if [[ "$FAIL" -gt 0 || "$NOT_IMPL" -gt 0 ]]; then
+            echo "::error::Cross-repo cases did not all pass"
+            exit 1
+          fi
+
+      - name: Tail service logs on failure
+        if: failure()
+        run: |
+          echo "=== CC logs (tail) ==="
+          docker compose -f docker-compose.ci.yaml ${{ steps.r.outputs.overlay_flags }} \
+            logs --tail=120 jarvis-command-center || true
+          echo "=== from-source services logs (tail) ==="
+          docker compose -f docker-compose.ci.yaml ${{ steps.r.outputs.overlay_flags }} \
+            logs --tail=120 ${{ steps.r.outputs.up_non_cc }} || true
+          echo "=== fake logs ==="
+          cat /tmp/fake_llm.log 2>/dev/null || true
+          cat /tmp/fake_whisper.log 2>/dev/null || true
+          cat /tmp/fake_tts.log 2>/dev/null || true
+
+      - name: Tear down
+        if: always()
+        run: |
+          docker compose -f docker-compose.ci.yaml ${{ steps.r.outputs.overlay_flags }} \
+            --profile core --profile from-source down -v --remove-orphans || true
+          for pid in "${FAKE_LLM_PID:-}" "${FAKE_WHISPER_PID:-}" "${FAKE_TTS_PID:-}"; do
+            [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+          done

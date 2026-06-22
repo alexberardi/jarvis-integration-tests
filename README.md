@@ -49,12 +49,14 @@ deps + auth + config come up first, the seed mints CC's app-key **and** the
 node-key (an auth row *and* a CC-local `nodes` row), then CC starts with that
 key. Collapsing the phases breaks the credential chain.
 
-### Two lanes
+### The lanes
 
 | Lane | Trigger | LLM/STT/TTS | Proves | Cost |
 |---|---|---|---|---|
 | **Fast** | every PR (hot-path repos) | host fakes (canned) | wiring + contracts: auth round-trips, discovery, MQTT, CC tool-call parsing | free, ~3–4 min |
 | **Behavior** | nightly + on-demand ([`behavior-corpus.yml`](.github/workflows/behavior-corpus.yml)) | real **llm-proxy** `REST` → gpt-4.1-nano via CC's real `ChatGPTOpenAI` provider; whisper/tts stay faked | *does the feature actually work* — a voice-command corpus asserts utterances route to the correct **real CC tools** with sensible args | pennies/run |
+| **From-source (T9)** | a PR in llm-proxy / whisper / tts ([`from-source-services.yml`](.github/workflows/from-source-services.yml)) | the *one* PR'd service built from source, the other two faked | a single service's PR works in the real cross-service stack (real round-trips, not fakes) | free–pennies |
+| **Cross-repo (T10)** | a PR with `Linked-PR:` markers ([`cross-repo-services.yml`](.github/workflows/cross-repo-services.yml)) | the linked services built from source *together*, the rest faked | a multi-repo feature composes **as one unit** — both PR builds boot, discovery resolves, the cross-service credential chain holds (and, with a key, routes voice end to end) | free; pennies with key |
 
 > **The corpus is re-authored, not lifted, and targets BUILT-IN commands only.**
 > llm-proxy's behavior corpus (`tests/manual/behavior/`) routes against a
@@ -110,6 +112,60 @@ Driven by [`from-source-services.yml`](.github/workflows/from-source-services.ym
 [`tests/test_from_source_services.py`](tests/test_from_source_services.py),
 gated on per-lane env flags so they no-op everywhere else.
 
+### Cross-repo lane (T10)
+
+Real Jarvis features span repos, but a PR is per-repo — so a coordinated feature
+(e.g. a command-center change + a matching llm-proxy change) needs to be tested as
+**one unit**. The cross-repo lane builds `{originating} ∪ keys(linked_prs)` from
+source *together* in one stack and runs the cross-repo case.
+
+Declare the sibling PRs in **the PR body**, one per line (repeatable):
+
+```
+Linked-PR: jarvis-llm-proxy-api@feat/streaming
+Linked-PR: jarvis-llm-proxy-api@a1b2c3d        # a SHA is reproducible; a branch resolves at clone time
+```
+
+A repo's [`cross-repo-trigger.yml`](.github/workflows/cross-repo-services.yml)
+(in each participating repo) parses those markers and fires `repository_dispatch
+[cross-repo-integration]` here; no marker → it no-ops (the single-repo lanes still
+run). It's **symmetric** — every participating PR can carry markers, both compute
+the same sorted `feature_key`, and the receiver's concurrency group dedups them to
+one run per feature.
+
+[`tools/resolve_cross_repo.py`](tools/resolve_cross_repo.py) folds the originating
+PR into the map, validates every name against the six `*-from-source.yaml` overlays
+(fail-fast on a typo), and emits the composed overlay `-f` chain, the per-repo
+checkout list, the `seed.sh` discovery overrides, the host-fake skip flags, and the
+plan-case sets. Two **mutually-exclusive** modes per run (the llm-proxy backend is
+one or the other):
+
+- **Composition** (default, **no key**) — **CASE-401**: a direct app-auth'd plain
+  `/v1/chat` to the from-source proxy on the MOCK backend, using CC's seed-minted
+  `command-center` creds. Green proves both PR builds boot, the CC-issued credential
+  validates against auth from *inside* the linked-proxy build (the cross-service
+  credential chain), and the API→model internal-token hop works in both PRs' code.
+  It is a composition/credential signal, **not** a routing signal — a no-key
+  CC→proxy routing test is impossible (CC's default `json_object` voice path 500s
+  on MOCK).
+- **Routing** (key-gated) — **CASE-402**: when CC + llm-proxy both build *and*
+  `OPENAI_API_KEY` is set, the from-source proxy runs `REST` → gpt-4.1-nano and CC
+  routes a real voice command through its real `ChatGPTOpenAI` native-tool path. The
+  fuller cross-repo behavior signal.
+
+```bash
+gh workflow run cross-repo-services.yml \
+  --repo alexberardi/jarvis-integration-tests --ref main \
+  -f service=jarvis-command-center -f source_ref=main \
+  -f linked_prs='{"jarvis-llm-proxy-api":"main"}'
+```
+
+> **`up --build` is mandatory.** The CC/auth/config overlays keep `image:` next to
+> `build:`; a plain `docker compose up` PULLS the `:dev` image and skips the build,
+> silently testing `:dev` not the PR. The overlays carry `pull_policy: build` and
+> the lane passes `--build` (belt and suspenders). This also fixed a latent bug in
+> the fast lane's CC bring-up.
+
 ## Run it standalone
 
 The runner exposes `workflow_dispatch`, so you can drive it without a PR:
@@ -138,22 +194,27 @@ compose/
   postgres-init.sh              # creates jarvis_auth + jarvis_config DBs
   ci-overlays/                  # *-from-source.yaml — swap a service's :dev image for a PR build
     llm-proxy-behavior.yaml         # behavior lane: real llm-proxy (REST->cloud) + CC repoint
-    jarvis-llm-proxy-api-from-source.yaml  # T9: real llm-proxy (MOCK) built from PR source
+    jarvis-llm-proxy-api-from-source.yaml  # T9/T10: real llm-proxy built from PR source (MOCK, or REST in routing)
     jarvis-whisper-api-from-source.yaml    # T9: real whisper built from PR source
     jarvis-tts-from-source.yaml            # T9: real Piper tts built from PR source
+    jarvis-command-center-from-source.yaml # CC built from PR source (pull_policy: build)
 tests/
   conftest.py                   # qa_case marker -> JUnit property (joined by parse_junit)
   test_loop_smoke.py            # CASE-001..003 — fakes-only, no stack
   test_cc_real_smoke.py         # CASE-101..215 — full real-stack round-trips
   test_cc_behavior_corpus.py    # behavior lane: corpus -> CC's real ChatGPTOpenAI provider
   test_from_source_services.py  # T9: CASE-301/302/311/321 — real llm-proxy/whisper/tts round-trips
+  test_cross_repo_services.py   # T10: CASE-401/402 — multi-repo feature composes as one unit
+  test_resolve_cross_repo.py    # unit tests for tools/resolve_cross_repo.py (no stack)
   behavior/                     # tools.cc.yaml + corpus.cc.yaml (CC's REAL tools)
   fakes/                        # fake_llm/whisper/tts + canned_responses.yaml
 tools/parse_junit.py            # JUnit XML -> case-status JSON for the PR comment
+tools/resolve_cross_repo.py     # T10: linked_prs -> overlay flags / checkout / seed / fakes / plan cases
 requirements-ci.txt             # test-client deps (pytest, httpx, paho-mqtt, FastAPI fakes)
 .github/workflows/integration-runner.yml   # PR fast lane (repository_dispatch)
 .github/workflows/behavior-corpus.yml      # nightly + on-demand behavior lane
 .github/workflows/from-source-services.yml # T9: llm-proxy/whisper/tts built from PR source
+.github/workflows/cross-repo-services.yml  # T10: {originator} U linked_prs built from source together
 docs/integration-tests.md       # full reference (migrated; see its banner)
 ```
 
@@ -171,6 +232,12 @@ docs/integration-tests.md       # full reference (migrated; see its banner)
   - `311` CC streams a complete reply through the real Piper TTS (real audio).
   - `321` CC proxies a generated clip through the real whisper (real transcribe,
     shape-asserted).
+- **CASE-401/402** — T10 cross-repo (≥2 services built from source together):
+  - `401` (no key) CC + llm-proxy compose as a unit — direct app-auth'd plain
+    `/v1/chat` with CC's seeded creds proves both builds boot + the cross-service
+    credential chain + the API→model hop. Gated on both being in the set.
+  - `402` (key-gated) CC routes a voice command through the from-source proxy to a
+    real cloud model — the full cross-repo routing signal.
 
 The `repository_dispatch` payload's `plan_cases` (comma-separated CASE-IDs)
 selects which cases a given run reports; missing ones are surfaced as
