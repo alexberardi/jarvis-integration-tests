@@ -11,10 +11,16 @@ Each case is gated on a per-service env flag that the from-source workflow
 running, so the file is a clean no-op skip everywhere else (PR fast lane, local
 runs, the behavior lane):
 
-    LLM_PROXY_URL          -> CASE-301  (real proxy reachable directly)
-    LLM_PROXY_FROM_SOURCE  -> CASE-302  (CC -> real proxy, MOCK backend)
+    LLM_PROXY_URL          -> CASE-301  (real proxy /health reaches model svc)
+    LLM_PROXY_URL + app key-> CASE-302  (real proxy /v1/chat/completions, MOCK)
     TTS_FROM_SOURCE        -> CASE-311  (CC -> real Piper TTS, real audio)
     WHISPER_FROM_SOURCE    -> CASE-321  (CC -> real whisper, real transcribe)
+
+Note on the llm-proxy lane: it validates the proxy's OWN contract directly, not
+CC -> proxy routing. CC's voice flow sends response_format=json_object, which the
+proxy enforces (chat_runner: requires_json) — a JSON-returning model is required,
+so the MOCK backend can only be exercised on a plain (non-json) chat request hit
+directly. CC -> real-model routing is the behavior lane's job (real cloud model).
 
 The 3xx CASEs that route through CC reuse the same seeded node creds + URL env
 as test_cc_real_smoke.py (CC_URL, CC_NODE_ID, CC_NODE_KEY).
@@ -44,7 +50,10 @@ CC_NODE_ID = os.environ.get("CC_NODE_ID", "")
 CC_NODE_KEY = os.environ.get("CC_NODE_KEY", "")
 
 LLM_PROXY_URL = os.environ.get("LLM_PROXY_URL", "")
-LLM_PROXY_FROM_SOURCE = os.environ.get("LLM_PROXY_FROM_SOURCE", "")
+# The proxy's /v1/chat/completions is app-auth'd; CASE-302 reuses CC's seeded
+# app credentials (the from-source workflow passes them through).
+LLM_PROXY_APP_ID = os.environ.get("LLM_PROXY_APP_ID", "command-center")
+LLM_PROXY_APP_KEY = os.environ.get("LLM_PROXY_APP_KEY", "")
 TTS_FROM_SOURCE = os.environ.get("TTS_FROM_SOURCE", "")
 WHISPER_FROM_SOURCE = os.environ.get("WHISPER_FROM_SOURCE", "")
 
@@ -117,43 +126,49 @@ def test_real_llm_proxy_health_reaches_model_service():
 
 
 # --------------------------------------------------------------------------- #
-# CASE-302 — CC routes a voice command through the real proxy (MOCK backend).
+# CASE-302 — real proxy /v1/chat/completions OpenAI contract (MOCK backend).
 # --------------------------------------------------------------------------- #
-@pytest.mark.skipif(not CC_URL, reason=SKIP_NO_STACK)
-@pytest.mark.skipif(not (CC_NODE_ID and CC_NODE_KEY), reason=SKIP_NO_NODE)
-@pytest.mark.skipif(not LLM_PROXY_FROM_SOURCE, reason="LLM_PROXY_FROM_SOURCE unset — llm-proxy not built from source")
+@pytest.mark.skipif(not LLM_PROXY_URL, reason="LLM_PROXY_URL unset — llm-proxy not built from source")
+@pytest.mark.skipif(not LLM_PROXY_APP_KEY, reason="LLM_PROXY_APP_KEY unset — seed app key not passed")
 @pytest.mark.qa_case("CASE-302")
-def test_cc_voice_command_through_real_proxy_mock_backend():
-    """CC -> real llm-proxy (MOCK) -> back into VoiceCommandResponse.
+def test_real_proxy_chat_completions_contract_mock_backend():
+    """POST /v1/chat/completions on the from-source proxy (app-auth'd).
 
-    The MOCK backend echoes the prompt as plain text with tool_calls=None
-    (backends/mock_backend.py), so CC's text parser falls back to a `complete`
-    response whose assistant_message is the MOCK echo ("[mock-text:...] ...").
-    Asserting that the echo flowed back proves the WHOLE chain end-to-end
-    through real code: CC -> real proxy API /v1/chat/completions -> model
-    service /internal/model/chat -> MOCK -> OpenAI-shaped response -> CC parse.
-    (Tool routing is the behavior lane's job; MOCK can't route.)
+    Validates the proxy's OpenAI contract end-to-end through real code on the
+    MOCK backend: API server -> X-Internal-Token -> model service
+    /internal/model/chat -> MOCK -> OpenAI-shaped response -> back. MOCK echoes
+    the prompt as plain text ("[mock-text:...] ..."), so asserting the echo lands
+    in choices[0].message.content proves the whole proxy chain + app-auth work.
+
+    Hit DIRECTLY (not through CC): CC's voice flow sends
+    response_format=json_object, which the proxy enforces (chat_runner:
+    requires_json) and MOCK can't satisfy — that CC->real-model path is the
+    behavior lane's job. A plain chat request (no response_format) is the right
+    contract probe for a model-less proxy build.
     """
-    conv_id = "ci-fs-302"
-    _start_conversation(conv_id)
     resp = httpx.post(
-        f"{CC_URL}/api/v0/voice/command",
-        headers=_node_headers(),
-        json={"voice_command": "hello there jarvis", "conversation_id": conv_id},
+        f"{LLM_PROXY_URL.rstrip('/')}/v1/chat/completions",
+        headers={
+            "X-Jarvis-App-Id": LLM_PROXY_APP_ID,
+            "X-Jarvis-App-Key": LLM_PROXY_APP_KEY,
+        },
+        json={
+            "model": "live",
+            "messages": [{"role": "user", "content": "hello from ci"}],
+        },
         timeout=60.0,
     )
-    assert resp.status_code in (200, 202), (
-        f"/voice/command failed: {resp.status_code} body={resp.text[:400]}"
+    assert resp.status_code == 200, (
+        f"expected 200 from /v1/chat/completions, got {resp.status_code} "
+        f"body={resp.text[:400]}"
     )
     body = resp.json()
-    assert body.get("stop_reason") == "complete", (
-        f"expected stop_reason=complete (MOCK returns plain text, no tools), "
-        f"got body={body}"
-    )
-    assistant_message = (body.get("assistant_message") or "").lower()
-    assert "mock" in assistant_message, (
-        f"expected the MOCK backend echo in assistant_message (proves CC reached "
-        f"the real proxy + model service), got {body.get('assistant_message')!r}"
+    choices = body.get("choices") or []
+    assert choices, f"expected OpenAI choices[], got body={body}"
+    content = (choices[0].get("message", {}).get("content") or "").lower()
+    assert "mock" in content, (
+        f"expected the MOCK backend echo in choices[0].message.content (proves "
+        f"the real API -> model service -> MOCK chain), got {content!r}"
     )
 
 
