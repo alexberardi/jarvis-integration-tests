@@ -48,11 +48,13 @@ def test_cc_plus_llm_proxy_union():
     assert o["start_fake_whisper"] == "true" and o["start_fake_tts"] == "true"
     assert "CROSS_REPO_CC=1" in o["test_env"] and "CROSS_REPO_LLM=1" in o["test_env"]
     assert "LLM_PROXY_URL=http://localhost:7704" in o["test_env"]
-    # composition plan: T9 llm cases + the cross-repo composition case
-    assert o["plan_cases"] == "CASE-301,CASE-302,CASE-401"
-    # routing plan drops the MOCK-asserting cases (302/401), adds 402
+    # composition plan: T9 llm cases (incl. the 303/304 app-auth REJECT pair) +
+    # the cross-repo composition case. always_cases sort first, then composition.
+    assert o["plan_cases"] == "CASE-301,CASE-303,CASE-304,CASE-302,CASE-401"
+    # routing plan drops the MOCK-asserting cases (302/401), keeps the
+    # backend-agnostic always cases (301/303/304), adds 402.
     assert o["routing_possible"] == "true"
-    assert o["plan_cases_routing"] == "CASE-301,CASE-402"
+    assert o["plan_cases_routing"] == "CASE-301,CASE-303,CASE-304,CASE-402"
     checkout = json.loads(o["checkout_json"])
     assert checkout == [
         {"repo": "jarvis-command-center", "ref": "ccsha", "path": "_src/jarvis-command-center"},

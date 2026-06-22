@@ -84,10 +84,13 @@ KNOWN: dict[str, dict] = {
         up=["jarvis-llm-proxy-model", "jarvis-llm-proxy-api"], fake="llm",
         seed="LLM_PROXY_HOST=jarvis-llm-proxy-api LLM_PROXY_PORT=7704",
         test="CROSS_REPO_LLM=1 LLM_PROXY_FROM_SOURCE=1 LLM_PROXY_URL=http://localhost:7704",
-        # 301 = API->model hop (backend-agnostic). 302 = direct /v1/chat MOCK echo
-        # (MOCK-only — it asserts "mock" in the reply, which a REST->cloud backend
-        # would not return, so it's composition-only).
-        always_cases=["CASE-301"], composition_cases=["CASE-302"],
+        # 301 = API->model hop (backend-agnostic). 303/304 = app-auth REJECT paths
+        # (wrong key / missing headers -> 401), which short-circuit before the
+        # backend, so they hold on MOCK and REST alike -> always. 302 = direct
+        # /v1/chat MOCK echo (MOCK-only — it asserts "mock" in the reply, which a
+        # REST->cloud backend would not return, so it's composition-only).
+        always_cases=["CASE-301", "CASE-303", "CASE-304"],
+        composition_cases=["CASE-302"],
     ),
     "jarvis-whisper-api": dict(
         overlay="jarvis-whisper-api-from-source.yaml", phase="add",

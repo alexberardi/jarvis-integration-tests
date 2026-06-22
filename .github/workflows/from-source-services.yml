@@ -273,7 +273,7 @@ jobs:
           # plan-cases is the lane's case for this service; parse_junit reports
           # any missing one as not-implemented.
           case "${{ steps.r.outputs.service }}" in
-            jarvis-llm-proxy-api) PLAN="CASE-301,CASE-302" ;;
+            jarvis-llm-proxy-api) PLAN="CASE-301,CASE-302,CASE-303,CASE-304" ;;
             jarvis-whisper-api)   PLAN="CASE-321" ;;
             jarvis-tts)           PLAN="CASE-311" ;;
           esac
