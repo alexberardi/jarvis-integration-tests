@@ -65,11 +65,39 @@ token" (`jwt.decode` JWTError branch).
 
 | Gap | Disposition |
 | --- | --- |
-| CC `/nodes/{id}/settings/requests` accepts a MISSING `Authorization` header (presence-check branch of verify_user_jwt) | **authored → CASE-221 (PR pending)** |
-| CC `/nodes/{id}/settings/requests` accepts a present-but-undecodable Bearer token (jwt.decode reject branch) | **authored → CASE-222 (PR pending)** |
-| CC `/admin/nodes/{id}/factory-reset` (device-bricking surface) accepts a MISSING `Authorization` header — proves the destructive endpoint is auth-gated at all | **authored → CASE-223 (PR pending)** |
+| CC `/nodes/{id}/settings/requests` accepts a MISSING `Authorization` header (presence-check branch of verify_user_jwt) | **covered** (CASE-221, merged #11) |
+| CC `/nodes/{id}/settings/requests` accepts a present-but-undecodable Bearer token (jwt.decode reject branch) | **covered** (CASE-222, merged #11) |
+| CC `/admin/nodes/{id}/factory-reset` (device-bricking surface) accepts a MISSING `Authorization` header — proves the destructive endpoint is auth-gated at all | **covered** (CASE-223, merged #11) |
+
+## 2026-06-22 — authenticated request-contract edges (CC, fast lane)
+
+The 401 credential-reject surface is now well covered (CASE-216..223). The next
+layer down had ZERO coverage: a request that IS authenticated with valid node
+credentials but is *out-of-order* (a conversation that was never started) or
+*malformed* (a body missing a required field). Those are real contracts CC
+implements in handler code; the happy-path suite (CASE-101..215) never trips
+them because it always sequences correctly and always sends complete bodies, so
+a fail-open regression would pass silently. Authored as a cohesive cohort in the
+integration-runner fast lane (`tests/test_cc_request_contracts.py`, gated on
+`CC_URL` + `CC_NODE_ID`/`CC_NODE_KEY`). Verified against jarvis-command-center
+source: `app/main.py:719-721` and `:882-887` (the conversation precondition
+guard, `conversation_cache.get_tools(...) is None` → 400 "Conversation not
+initialized for tool-based flow") and `app/main.py:108-124` (the custom
+`RequestValidationError` handler → 400 `{"error":"validation_error",...}`
+envelope, deliberately NOT FastAPI's default 422).
+
+| Gap | Disposition |
+| --- | --- |
+| CC `/voice/command/stream` runs the pipeline for a conversation_id that was never started (precondition guard fails open → 500 instead of 400) | **authored → CASE-224 (PR pending)** |
+| CC `/voice/command` (blocking twin — previously ZERO coverage) lacks the same precondition guard, a copy-paste-drift hazard from its streaming sibling | **authored → CASE-225 (PR pending)** |
+| CC malformed-body responses regress from the custom 400 `validation_error` envelope to FastAPI's default 422, breaking node/mobile clients that render `details` | **authored → CASE-226 (PR pending)** |
 
 ### Related negative-path gaps still open (future cohorts)
+
+- **open** — CC `/voice/command/stream` oversized `voice_command` payload
+  (boundary → 413/422) against the real stack. Distinct from CASE-226's
+  missing-field path; needs the real body-size limit confirmed against source
+  before authoring (avoid asserting a framework default).
 
 - **open** — CC node-authed endpoint with a *missing* `X-API-Key` header returns
   422 (FastAPI required-header default). Lower value (framework default, not a
@@ -85,6 +113,6 @@ token" (`jwt.decode` JWTError branch).
   likely redundant, evaluate before authoring.
 - **open** — `/voice/command/stream` body-contract edges (missing
   `voice_command`, oversized payload → 413/422) against the real stack.
-- **authored → CASE-303/304 (PR pending)** — llm-proxy `/v1/chat/completions`
+- **covered** (CASE-303/304, merged #10) — llm-proxy `/v1/chat/completions`
   negative app-auth (401 on bad/missing `X-Jarvis-App-*`) in the from-source
   lane — mirror of CASE-219/220 one layer out. See the cohort section above.
