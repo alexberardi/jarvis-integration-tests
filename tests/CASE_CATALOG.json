@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "case_count": 44,
+    "case_count": 48,
     "do_not_edit": "Run `python tools/gen_case_catalog.py --write`; CI drift-checks with --check.",
     "generated_by": "tools/gen_case_catalog.py",
     "lane_modes": {
@@ -300,6 +300,38 @@
       "mode": "fast",
       "repo": null,
       "test": "tests/test_cc_node_scope_contracts.py::test_cc_settings_snapshot_upload_rejects_other_node_with_403"
+    },
+    "CASE-230": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "config-service POST /services with a WRONG X-Admin-Token -> 401.",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_config_service_registry_contracts.py::test_config_service_create_rejects_wrong_admin_token_with_401"
+    },
+    "CASE-231": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "config-service PUT /services/{name} with a WRONG X-Admin-Token -> 401.",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_config_service_registry_contracts.py::test_config_service_update_rejects_wrong_admin_token_with_401"
+    },
+    "CASE-232": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "config-service DELETE /services/{name} with a WRONG X-Admin-Token -> 401.",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_config_service_registry_contracts.py::test_config_service_delete_rejects_wrong_admin_token_with_401"
+    },
+    "CASE-233": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "config-service GET /services/{name} for an unknown service -> 404.",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_config_service_registry_contracts.py::test_config_service_get_unknown_service_returns_404"
     },
     "CASE-301": {
       "gating": "always (both modes) when jarvis-llm-proxy-api builds from source",

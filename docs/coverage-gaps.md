@@ -118,9 +118,47 @@ node's requests"); router mounted at `/api/v0` (`app/main.py:429`).
 
 | Gap | Disposition |
 | --- | --- |
-| CC GET `/nodes/{id}/settings/requests/{rid}` with valid node creds but a DIFFERENT node_id in the path leaks/serves another node's request (cross-node READ isolation fails open) | **authored → CASE-227 (PR pending)** |
-| CC GET own-node settings-request for a nonexistent request_id regresses from a clean 404 to a 500 (or a silent fall-through) | **authored → CASE-228 (PR pending)** |
-| CC PUT `/nodes/{id}/settings/requests/{rid}/snapshot` to a DIFFERENT node's request (the write/tamper twin of CASE-227, a separate handler prone to copy-paste drift) overwrites another node's encrypted snapshot | **authored → CASE-229 (PR pending)** |
+| CC GET `/nodes/{id}/settings/requests/{rid}` with valid node creds but a DIFFERENT node_id in the path leaks/serves another node's request (cross-node READ isolation fails open) | **covered** (CASE-227, merged) |
+| CC GET own-node settings-request for a nonexistent request_id regresses from a clean 404 to a 500 (or a silent fall-through) | **covered** (CASE-228, merged) |
+| CC PUT `/nodes/{id}/settings/requests/{rid}/snapshot` to a DIFFERENT node's request (the write/tamper twin of CASE-227, a separate handler prone to copy-paste drift) overwrites another node's encrypted snapshot | **covered** (CASE-229, merged) |
+
+## 2026-06-22 — config-service `/services` registry contract edges (fast lane)
+
+The CC, auth, and llm-proxy reject contracts are now well covered (CASE-216..229,
+303/304), but **jarvis-config-service** — the service-discovery backbone every
+Jarvis app reads at boot, and which the fast lane brings up on every stack run —
+had only `/health` asserted (CASE-103). Its `/services` registry CONTRACT was
+untested: who may MUTATE the registry, and what an unknown lookup returns. The
+three mutating routes each INDEPENDENTLY wire `Depends(require_admin)`
+(`app/routes/services.py`), so the admin-token write-gate can regress on one verb
+without the others — and each verb's fail-open has a distinct blast radius: POST =
+inject a rogue service entry (discovery poisoning / MITM), PUT = silently repoint
+an existing entry (stealth MITM, separate handler), DELETE = deregister a live
+service (DoS, third handler). The read side (`GET /services/{name}`) owes clients a
+clean 404-vs-5xx distinction so boot-time discovery can tell "not registered yet"
+from "registry broken". The happy-path suite keeps all of this green: the seed only
+ever writes with the VALID admin token and reads back services it just registered.
+
+Authored as a cohesive cohort in the integration-runner fast lane
+(`tests/test_config_service_registry_contracts.py`, gated on `CC_URL` exactly like
+CASE-103/104; `CONFIG_URL` defaults to the compose-mapped port). All four are
+deterministic and need NO valid credentials — the 401s send a present-but-WRONG
+`X-Admin-Token` (the CI stack sets a non-empty `JARVIS_CONFIG_ADMIN_TOKEN`, so
+`require_admin` reaches its compare-and-reject branch, not the unconfigured-500
+one), with COMPLETE valid bodies so the auth gate (resolved before body
+validation) is the only thing under test; the 404 is an unauthenticated GET. The
+mutating verbs target an ABSENT service name so even a failed guard could not touch
+a registered entry. Verified against jarvis-config-service source: `app/auth.py`
+(`require_admin` wrong token → 401 "Invalid admin token"),
+`app/routes/services.py` (`create_service`/`update_service`/`delete_service` each
+`Depends(require_admin)`; `get_service` unknown → 404 "Service '{name}' not found").
+
+| Gap | Disposition |
+| --- | --- |
+| config-service POST `/services` accepts a WRONG admin token (registration write-gate fails open → rogue-service injection / discovery poisoning) | **authored → CASE-230 (PR pending)** |
+| config-service PUT `/services/{name}` accepts a WRONG admin token (update write-gate, a separate handler → silent repoint / stealth MITM) | **authored → CASE-231 (PR pending)** |
+| config-service DELETE `/services/{name}` accepts a WRONG admin token (deregistration write-gate, a third handler → drop a live service / DoS) | **authored → CASE-232 (PR pending)** |
+| config-service GET `/services/{name}` for an unknown service regresses from a clean 404 to a 500 / fall-through (breaks clients distinguishing 'not registered' from 'registry broken') | **authored → CASE-233 (PR pending)** |
 
 ### Related negative-path gaps still open (future cohorts)
 
