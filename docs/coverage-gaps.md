@@ -88,9 +88,39 @@ envelope, deliberately NOT FastAPI's default 422).
 
 | Gap | Disposition |
 | --- | --- |
-| CC `/voice/command/stream` runs the pipeline for a conversation_id that was never started (precondition guard fails open → 500 instead of 400) | **authored → CASE-224 (PR pending)** |
-| CC `/voice/command` (blocking twin — previously ZERO coverage) lacks the same precondition guard, a copy-paste-drift hazard from its streaming sibling | **authored → CASE-225 (PR pending)** |
-| CC malformed-body responses regress from the custom 400 `validation_error` envelope to FastAPI's default 422, breaking node/mobile clients that render `details` | **authored → CASE-226 (PR pending)** |
+| CC `/voice/command/stream` runs the pipeline for a conversation_id that was never started (precondition guard fails open → 500 instead of 400) | **covered** (CASE-224, merged #12) |
+| CC `/voice/command` (blocking twin — previously ZERO coverage) lacks the same precondition guard, a copy-paste-drift hazard from its streaming sibling | **covered** (CASE-225, merged #12) |
+| CC malformed-body responses regress from the custom 400 `validation_error` envelope to FastAPI's default 422, breaking node/mobile clients that render `details` | **covered** (CASE-226, merged #12) |
+
+## 2026-06-22 — node-scoped resource-access contracts (CC settings-requests, fast lane)
+
+The 401 (bad creds), 400 (precondition/malformed) layers are now covered
+(CASE-216..226), but the AUTHORIZATION layer between them had ZERO coverage: a
+request made with VALID node credentials that targets a resource the node does
+NOT own, or one that does not exist. CC's settings-request endpoints
+(`/nodes/{node_id}/settings/requests/...`, `verify_api_key`) take the target
+`node_id` in the URL path and compare it against the authenticated node's
+identity before any DB lookup — that comparison is the cross-node isolation
+boundary. A fail-open regression (a collapsed comparison, or copy-paste drift
+between the read handler and the upload handler) would let any registered node
+READ or OVERWRITE another node's pending encrypted settings snapshot — a
+cross-tenant data leak / tamper that the happy-path suite (CASE-101..215, which
+only ever touches a node's OWN freshly-created requests, e.g. CASE-212) keeps
+green through. Authored as a cohesive cohort in the integration-runner fast lane
+(`tests/test_cc_node_scope_contracts.py`, gated on `CC_URL` +
+`CC_NODE_ID`/`CC_NODE_KEY`). All three branches are reachable deterministically
+with the seeded node creds — no waiting, no pre-seeded state — because the
+ownership guard fires before the request lookup. Verified against
+jarvis-command-center source: `app/node_settings.py:243` (GET node_id mismatch →
+403 "Cannot access other node's requests"), `:252` (GET request not found → 404
+"Request not found"), `:280` (PUT node_id mismatch → 403 "Cannot upload to other
+node's requests"); router mounted at `/api/v0` (`app/main.py:429`).
+
+| Gap | Disposition |
+| --- | --- |
+| CC GET `/nodes/{id}/settings/requests/{rid}` with valid node creds but a DIFFERENT node_id in the path leaks/serves another node's request (cross-node READ isolation fails open) | **authored → CASE-227 (PR pending)** |
+| CC GET own-node settings-request for a nonexistent request_id regresses from a clean 404 to a 500 (or a silent fall-through) | **authored → CASE-228 (PR pending)** |
+| CC PUT `/nodes/{id}/settings/requests/{rid}/snapshot` to a DIFFERENT node's request (the write/tamper twin of CASE-227, a separate handler prone to copy-paste drift) overwrites another node's encrypted snapshot | **authored → CASE-229 (PR pending)** |
 
 ### Related negative-path gaps still open (future cohorts)
 
@@ -103,8 +133,9 @@ envelope, deliberately NOT FastAPI's default 422).
   422 (FastAPI required-header default). Lower value (framework default, not a
   service decision); deferred to avoid vanity.
 - **partially covered** — CC user-JWT endpoints (`verify_user_jwt`): missing
-  header → 401 and undecodable Bearer → 401 are now **authored → CASE-221/222
-  (PR pending)**; factory-reset missing-auth → 401 is **CASE-223 (PR pending)**.
+  header → 401 and undecodable Bearer → 401 are **covered** (CASE-221/222,
+  merged #11); factory-reset missing-auth → 401 is **covered** (CASE-223,
+  merged #11).
   Still **open** (need a JWT-signing fixture or a seeded second user; larger
   setup): expired-token → 401 (`ExpiredSignatureError` branch) and
   valid-but-non-member → 403 (`verify_household_role`).
