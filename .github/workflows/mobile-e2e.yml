@@ -182,11 +182,12 @@ jobs:
       - name: Run the provisioning happy-path flow
         working-directory: _src/jarvis-node-mobile
         env:
-          # SHAKEOUT: config discovery. The app must reach config-service to fetch
-          # a provisioning token; a fresh clearState app has no manual config URL.
-          # Likely needs a tiny app change (seed MANUAL_CONFIG_URL from an
-          # EXPO_PUBLIC var in DEV_MODE) — see the runbook. localhost works because
-          # the sim shares the host net with the colima-published ports.
+          # Config discovery is handled: the development-e2e build bakes
+          # EXPO_PUBLIC_MANUAL_CONFIG_URL=http://localhost:7700, which DEV_MODE
+          # config discovery seeds when no URL is pinned — so the app reaches
+          # config-service to fetch a provisioning token. localhost works because
+          # the sim shares the host net with the colima-published ports; a
+          # split-host topology rebuilds with the LAN IP (see the runbook).
           MAESTRO_DRIVER_STARTUP_TIMEOUT: "60000"
         run: |
           maestro --device "$SIM_UDID" test \
