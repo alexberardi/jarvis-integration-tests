@@ -105,18 +105,19 @@ def test_cc_voice_stream_rejects_unstarted_conversation_with_400():
 @pytest.mark.skipif(not CC_URL, reason=SKIP_REASON)
 @pytest.mark.skipif(not (CC_NODE_ID and CC_NODE_KEY), reason=SKIP_NO_NODE)
 @pytest.mark.qa_case("CASE-225")
-def test_cc_voice_command_rejects_unstarted_conversation_with_400():
-    """CC /voice/command (blocking) on a never-started conversation -> 400.
+def test_cc_voice_command_unstarted_conversation_returns_200_command_error():
+    """CC /voice/command (blocking) on a never-started conversation -> 200 with a
+    per-command error (NOT an HTTP 400).
 
-    The blocking `/voice/command` endpoint shares the same precondition guard as
-    its streaming twin (main.py:719-721) but is a SEPARATE handler with NO
-    existing coverage — the entire real-stack voice suite (CASE-204..213)
-    exercises only `/voice/command/stream`. This case is both the first
-    coverage of the blocking endpoint and an independent pin of the
-    precondition: a refactor could fix or break one handler's guard without
-    touching the other (a classic copy-paste-drift hazard). Same valid node
-    creds + complete body + never-started conversation_id -> 400 "Conversation
-    not initialized for tool-based flow".
+    The blocking `/voice/command` endpoint is batch-style: it returns HTTP 200 and
+    reports per-command outcomes in the body
+    (`{"commands":[{"success":false,"errors":{...}}]}`). This DIFFERS from its
+    streaming twin `/voice/command/stream` (CASE-224), which propagates an HTTP 400
+    for the same precondition. This case pins the blocking endpoint's actual failure
+    contract — nothing else covers it — and documents the deliberate divergence
+    between the two handlers. The precondition still fires: a never-started
+    conversation surfaces as commands[0].success == False with a "Conversation not
+    initialized for tool-based flow" message.
     """
     resp = httpx.post(
         f"{CC_URL}/api/v0/voice/command",
@@ -127,14 +128,18 @@ def test_cc_voice_command_rejects_unstarted_conversation_with_400():
         },
         timeout=15.0,
     )
-    assert resp.status_code == 400, (
-        f"expected 400 for an un-started conversation on /voice/command, got "
-        f"{resp.status_code} body={resp.text[:300]} — the blocking endpoint's "
-        f"conversation-precondition guard may be failing open."
+    assert resp.status_code == 200, (
+        f"expected 200 — the blocking endpoint is batch-style (per-command results "
+        f"in the body) — got {resp.status_code} body={resp.text[:300]}"
     )
-    assert "not initialized" in resp.text.lower(), (
+    cmd = resp.json()["commands"][0]
+    assert cmd["success"] is False, (
+        f"expected commands[0].success == False for an un-started conversation, got "
+        f"{cmd} — the precondition guard may be failing open."
+    )
+    assert "not initialized" in (cmd.get("errors", {}).get("message", "") or "").lower(), (
         f"expected the 'Conversation not initialized' precondition detail, got "
-        f"body={resp.text[:300]} — the 400 may be coming from a different check."
+        f"command={cmd}"
     )
 
 
