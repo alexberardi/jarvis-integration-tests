@@ -108,16 +108,25 @@ LAN IP. (`compose/ci-overlays/fake-node.yaml` documents the same constraint.)
 
 ---
 
-## Config discovery — the main open shakeout item
+## Config discovery — handled (DEV_MODE baked config URL)
 
 Before provisioning, the app must reach **config-service** to fetch a provisioning
 token. A fresh `clearState` app discovers config via (in order) a manual URL in
-AsyncStorage → cached config → mDNS → a `/24` sweep. None of these resolve cleanly in
-CI, so the most robust fix is a **small app change**: in `DEV_MODE`, seed the manual
-config URL from an `EXPO_PUBLIC_MANUAL_CONFIG_URL` env (baked by the `development-e2e`
-profile, like `EXPO_PUBLIC_DEV_MODE`). Then `connect-simulator-button` →
-token-fetch → provision works without a UI detour. Until that lands, the Maestro flow
-will stall at the token fetch — this is the first thing to wire during shakeout.
+AsyncStorage → cached config → mDNS → a `/24` sweep — none resolve cleanly in CI.
+
+**Resolved** (jarvis-node-mobile): in `DEV_MODE` only, config discovery now falls back
+to a baked `EXPO_PUBLIC_MANUAL_CONFIG_URL` when AsyncStorage has no pinned URL
+(`configDiscoveryService.ts` Tier 0; `env.ts` `MANUAL_CONFIG_URL`). The
+`development-e2e` EAS profile bakes it to `http://localhost:7700`. A user's UI-pinned
+URL still wins, and production builds never set the env, so it is inert there. So a
+`clearState` e2e build resolves config-service → `connect-simulator-button` →
+token-fetch → provision works with no UI detour.
+
+> **Topology caveat:** `EXPO_PUBLIC_*` vars are **build-time**. `http://localhost:7700`
+> works for the single-host colima topology (the sim shares the host's published
+> ports). For a split-host / self-hosted topology, **rebuild** the `development-e2e`
+> app with `EXPO_PUBLIC_MANUAL_CONFIG_URL=http://<lan-ip>:7700` (it can't be overridden
+> at launch). This is the same host-LAN-IP rule as the CC URL above.
 
 ---
 
@@ -156,8 +165,10 @@ via CC (`tools/assert_node_online.py` → `GET /api/v0/admin/nodes`):
    `EXPO_PUBLIC_DEV_MODE=true` is baked (the "Show Developer Options" panel appears).
    Add CocoaPods/Pods/Hermes caching + a native-dep-hash rebuild gate (cold build is
    ~12–25 min on a macOS runner).
-3. **Config-discovery injection** — wire `EXPO_PUBLIC_MANUAL_CONFIG_URL` (app change
-   above) so the app fetches a provisioning token in CI.
+3. **Config discovery** — ✅ handled (DEV_MODE baked `EXPO_PUBLIC_MANUAL_CONFIG_URL`,
+   above). For single-host colima the baked `http://localhost:7700` works as-is;
+   confirm the app reaches config-service + fetches a provisioning token. For a
+   split-host topology, rebuild with the LAN-IP value.
 4. **Maestro selectors** — confirm the two text-tap steps the flow marks `SHAKEOUT`
    (the "Nodes" bottom-tab label, the "Add Node" FAB); add testIDs if flaky. The
    provisioning-screen taps already use testIDs added in the node-mobile P3 PR.
