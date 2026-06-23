@@ -1,0 +1,235 @@
+name: Mobile e2e (provisioning, L2)
+
+# P3 of the MOBILE e2e lane (prds/mobile-app-delivery.md Phase 2 -> L2).
+#
+# Drives a REAL jarvis-node-mobile dev-client build in an iOS simulator, through
+# the provisioning happy-path, against the dockerized fake node
+# (compose/ci-overlays/fake-node.yaml) on the core auth/config/CC stack — then
+# asserts the node registered VIA command-center (the app's Success screen lies).
+#
+# ====================================================================
+# STATUS: SCAFFOLD — advisory, workflow_dispatch only. NOT a PR gate yet.
+# It has NOT run green end-to-end (needs a macOS runner + simulator + an
+# EAS dev-client build that this repo's maintainer must shake out). The
+# validated-today pieces of P3 live elsewhere and DO run:
+#   * node-side wire contract  : tests/test_provisioning_contract.py (pure HTTP)
+#   * mobile-side wire contract : jarvis-node-mobile __tests__/api/provisioningApi.contract.test.ts
+#   * Maestro flow + testIDs    : jarvis-node-mobile/.maestro/*
+# Read docs/mobile-e2e.md BEFORE running this — it documents the runner-topology
+# decision, the networking constraint, the config-discovery injection, and a
+# step-by-step shakeout checklist. Each SHAKEOUT comment below is an item there.
+# ====================================================================
+#
+# TOPOLOGY (scaffolded): single Intel macOS runner (macos-13) running BOTH the
+# linux docker stack (via colima) AND the iOS simulator, so the sim reaches the
+# stack at plain localhost. This is the only SELF-CONTAINED GitHub-hosted option
+# today: Apple-Silicon macOS runners (macos-14/15) cannot run Docker (no nested
+# virt), and a two-job split needs a tunnel to bridge the sim to a separate linux
+# job. The RECOMMENDED long-term target is a self-hosted macOS runner on the same
+# LAN as a linux docker host — see docs/mobile-e2e.md "Runner topology".
+
+on:
+  workflow_dispatch:
+    inputs:
+      node_mobile_ref:
+        description: "jarvis-node-mobile branch/SHA to build"
+        required: false
+        default: "main"
+      require_online:
+        description: "Require node online=true via CC (not just registered) — keep false until heartbeat is confirmed"
+        required: false
+        default: "false"
+
+concurrency:
+  group: mobile-e2e-${{ github.event.inputs.node_mobile_ref || 'main' }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  mobile-e2e:
+    # macos-13 = Intel, the only GitHub-hosted image where colima/Docker boots
+    # (Apple-Silicon images lack nested virt). SHAKEOUT: macos-13 is deprecated;
+    # the self-hosted LAN topology in the runbook is the durable replacement.
+    runs-on: macos-13
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out integration-tests
+        uses: actions/checkout@v4
+
+      - name: Check out jarvis-node-setup (fake-node source)
+        uses: actions/checkout@v4
+        with:
+          repository: alexberardi/jarvis-node-setup
+          path: _src/jarvis-node-setup
+      - name: Check out jarvis-command-sdk (node-setup build context)
+        uses: actions/checkout@v4
+        with:
+          repository: alexberardi/jarvis-command-sdk
+          path: _src/jarvis-command-sdk
+      - name: Check out jarvis-node-mobile
+        uses: actions/checkout@v4
+        with:
+          repository: alexberardi/jarvis-node-mobile
+          ref: ${{ github.event.inputs.node_mobile_ref || 'main' }}
+          path: _src/jarvis-node-mobile
+
+      - name: Set up Docker on macOS (colima)
+        # SHAKEOUT: colima boot is slow (~minutes) + occasionally flakes on the
+        # network bridge; pin the action version + colima runtime in the runbook.
+        uses: douglascamata/setup-docker-macos-action@v1-alpha
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install harness deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-ci.txt
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # --- Backend: core stack + fake node, seeded. Same idioms as the
+      #     from-source lane (compose profiles + seed.sh exports). ---
+      - name: Bring up deps (postgres + auth + config + mqtt)
+        run: |
+          docker compose -f docker-compose.ci.yaml --profile core up -d --wait \
+            postgres jarvis-auth jarvis-config-service mosquitto
+
+      - name: Seed auth + config-service (mints CC app-key, CI superuser, household)
+        env:
+          AUTH_URL: http://localhost:7701
+          CONFIG_URL: http://localhost:7700
+          AUTH_ADMIN_TOKEN: ci-auth-admin-token
+          CONFIG_ADMIN_TOKEN: ci-auth-admin-token
+        run: bash compose/seed.sh
+
+      - name: Bring up command-center
+        env:
+          JARVIS_CC_APP_KEY: ${{ env.JARVIS_CC_APP_KEY }}
+        run: |
+          docker compose -f docker-compose.ci.yaml --profile core up -d --wait jarvis-command-center
+
+      - name: Build + bring up the fake node (provisioning server from source)
+        env:
+          NODE_SETUP_SOURCE_PATH: ./_src/jarvis-node-setup
+          SDK_SOURCE_PATH: ./_src/jarvis-command-sdk
+        run: |
+          docker compose -f docker-compose.ci.yaml -f compose/ci-overlays/fake-node.yaml \
+            --profile core --profile mobile-e2e up -d --wait --build jarvis-fake-node
+          docker compose -f docker-compose.ci.yaml -f compose/ci-overlays/fake-node.yaml ps
+
+      - name: Sanity — backend reachable from the host (== the simulator's localhost)
+        run: |
+          curl -sf http://localhost:7703/api/v0/health > /dev/null && echo "CC OK"
+          curl -sf http://localhost:8080/api/v1/info  > /dev/null && echo "fake-node OK"
+
+      # --- The node-side wire contract, now that the fake node is up (pure HTTP). ---
+      - name: Node-side provisioning contract
+        env:
+          FAKE_NODE_URL: http://localhost:8080
+        run: pytest tests/test_provisioning_contract.py -v
+
+      # --- Mobile: build the dev-client, boot the sim, run Maestro. ---
+      - name: Set up Node + Java (Maestro needs a JDK)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install node-mobile deps
+        working-directory: _src/jarvis-node-mobile
+        run: npm ci
+
+      - name: Build dev-client iOS simulator app (EXPO_PUBLIC_DEV_MODE baked true)
+        working-directory: _src/jarvis-node-mobile
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        # SHAKEOUT: a cold --local iOS build is ~12-25 min on a macOS runner; cache
+        # CocoaPods/Pods/Hermes and gate the rebuild on a native-dep hash (runbook).
+        run: |
+          npx eas-cli@latest build --local --platform ios \
+            --profile development-e2e --non-interactive --output ./build/sim.tar.gz
+          mkdir -p build/app && tar -xzf build/sim.tar.gz -C build/app
+          echo "APP_PATH=$(find build/app -maxdepth 2 -name '*.app' | head -1)" >> "$GITHUB_ENV"
+
+      - name: Boot iOS simulator + install the app
+        run: |
+          UDID=$(xcrun simctl list devices available | grep -m1 "iPhone 15" | grep -oE "[0-9A-F-]{36}")
+          xcrun simctl boot "$UDID"
+          open -a Simulator
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl install "$UDID" "$APP_PATH"
+          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+
+      - name: Install Maestro
+        run: |
+          curl -fsSL "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+      - name: Run the provisioning happy-path flow
+        working-directory: _src/jarvis-node-mobile
+        env:
+          # SHAKEOUT: config discovery. The app must reach config-service to fetch
+          # a provisioning token; a fresh clearState app has no manual config URL.
+          # Likely needs a tiny app change (seed MANUAL_CONFIG_URL from an
+          # EXPO_PUBLIC var in DEV_MODE) — see the runbook. localhost works because
+          # the sim shares the host net with the colima-published ports.
+          MAESTRO_DRIVER_STARTUP_TIMEOUT: "60000"
+        run: |
+          maestro --device "$SIM_UDID" test \
+            -e EMAIL=ci-node-test@example.com \
+            -e PASSWORD=ci-node-test-password \
+            -e NODE_HOST=127.0.0.1 -e NODE_PORT=8080 \
+            -e WIFI_SSID=HomeNetwork -e WIFI_PASSWORD=sim-wifi-password \
+            .maestro/provisioning-devmode-happy-path.yaml
+
+      # --- The authoritative assertion: node registered VIA command-center. ---
+      - name: Assert node provisioned via command-center
+        env:
+          CC_USER_JWT: ${{ env.CC_USER_JWT }}
+          CC_HOUSEHOLD_ID: ${{ env.CC_HOUSEHOLD_ID }}
+        run: |
+          REQUIRE_ONLINE=""
+          [[ "${{ github.event.inputs.require_online || 'false' }}" == "true" ]] && REQUIRE_ONLINE="--require-online"
+          python tools/assert_node_online.py \
+            --cc-url http://localhost:7703 --jwt "$CC_USER_JWT" \
+            --household "$CC_HOUSEHOLD_ID" $REQUIRE_ONLINE --timeout 60
+
+      - name: Collect Maestro artifacts on failure
+        if: failure()
+        run: |
+          mkdir -p maestro-artifacts
+          cp -R "$HOME/.maestro/tests" maestro-artifacts/ 2>/dev/null || true
+          xcrun simctl io "${SIM_UDID:-booted}" screenshot maestro-artifacts/final.png 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: mobile-e2e-debug
+          path: maestro-artifacts/
+          if-no-files-found: ignore
+
+      - name: Tail backend logs on failure
+        if: failure()
+        run: |
+          docker compose -f docker-compose.ci.yaml -f compose/ci-overlays/fake-node.yaml \
+            logs --tail=150 jarvis-command-center jarvis-fake-node || true
+
+      - name: Tear down
+        if: always()
+        run: |
+          docker compose -f docker-compose.ci.yaml -f compose/ci-overlays/fake-node.yaml \
+            --profile core --profile mobile-e2e down -v --remove-orphans || true
+          xcrun simctl shutdown "${SIM_UDID:-booted}" 2>/dev/null || true
