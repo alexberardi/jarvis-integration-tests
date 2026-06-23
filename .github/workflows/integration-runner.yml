@@ -286,8 +286,9 @@ jobs:
             cat "$RESP_FILE"
             exit 1
           fi
-          echo "CC /admin/nodes response: $(cat "$RESP_FILE")"
           CC_NODE_KEY=$(python3 -c "import json; print(json.load(open('$RESP_FILE'))['node_key'])")
+          echo "::add-mask::$CC_NODE_KEY"   # mask before dumping the raw response (public-repo log hygiene)
+          echo "CC /admin/nodes response: $(cat "$RESP_FILE")"
           {
             echo "CC_NODE_ID=$NODE_ID"
             echo "CC_NODE_KEY=$CC_NODE_KEY"

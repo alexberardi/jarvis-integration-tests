@@ -111,13 +111,17 @@ log "Both /health endpoints up"
 # ---- Run ----
 
 CC_RESPONSE=$(register_app_client "command-center" "Command Center")
-log "auth response (command-center): $CC_RESPONSE"
 CC_APP_KEY=$(echo "$CC_RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin)['key'])")
+# Mask BEFORE logging the raw response: ::add-mask:: is not retroactive, and
+# the response contains the key. Redacts it from the (public) Actions logs.
+if [[ -n "${GITHUB_ENV:-}" ]]; then echo "::add-mask::$CC_APP_KEY"; fi
+log "auth response (command-center): $CC_RESPONSE"
 log "command-center app_key captured (length=${#CC_APP_KEY})"
 
 CFG_RESPONSE=$(register_app_client "jarvis-config-service" "Config Service")
-log "auth response (config-service): $CFG_RESPONSE"
 CFG_APP_KEY=$(echo "$CFG_RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin)['key'])")
+if [[ -n "${GITHUB_ENV:-}" ]]; then echo "::add-mask::$CFG_APP_KEY"; fi
+log "auth response (config-service): $CFG_RESPONSE"
 log "jarvis-config-service app_key captured (length=${#CFG_APP_KEY})"
 
 # Belt-and-suspenders fakes registration. If config-service's POST /services
@@ -167,17 +171,21 @@ CI_USER_EMAIL="ci-node-test@example.com"
 CI_USER_PASSWORD="ci-node-test-password"
 
 USER_RESPONSE=$(register_ci_user "$CI_USER_EMAIL" "$CI_USER_PASSWORD")
+# v2.13 — capture the access_token (CASE-212 calls CC's user-JWT-gated
+# endpoints, e.g. /nodes/{id}/settings/requests which triggers an MQTT publish;
+# the registered user has admin/power_user on its auto-created household by
+# default). Capture + mask it BEFORE logging the raw response so the token is
+# redacted in the (public) Actions log.
+CC_USER_JWT=$(echo "$USER_RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin)['access_token'])")
+if [[ -n "${GITHUB_ENV:-}" ]]; then echo "::add-mask::$CC_USER_JWT"; fi
 log "auth response (register): $USER_RESPONSE"
 CC_HOUSEHOLD_ID=$(echo "$USER_RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin)['household_id'])")
 log "household_id captured: $CC_HOUSEHOLD_ID"
-# v2.13 — also capture the access_token. CASE-212 needs to call CC's
-# user-JWT-gated endpoints (e.g. /nodes/{id}/settings/requests, which
-# triggers an MQTT publish) and the registered user has admin/power_user
-# role on their auto-created household by default.
-CC_USER_JWT=$(echo "$USER_RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin)['access_token'])")
 log "user access_token captured (length=${#CC_USER_JWT})"
 
 if [[ -n "${GITHUB_ENV:-}" ]]; then
+  # (Credentials are masked at capture above, so they're redacted from the
+  # public Actions logs incl. later steps' env dumps.)
   {
     echo "CC_APP_KEY=$CC_APP_KEY"
     echo "JARVIS_CC_APP_KEY=$CC_APP_KEY"
