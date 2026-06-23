@@ -280,6 +280,7 @@ jobs:
             exit 1
           fi
           CC_NODE_KEY=$(python3 -c "import json; print(json.load(open('$RESP_FILE'))['node_key'])")
+          echo "::add-mask::$CC_NODE_KEY"   # public-repo log hygiene (ephemeral per-run key)
           {
             echo "CC_NODE_ID=$NODE_ID"
             echo "CC_NODE_KEY=$CC_NODE_KEY"
