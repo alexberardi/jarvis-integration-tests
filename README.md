@@ -235,6 +235,15 @@ the agentic dev-loop's QA + engineering personas read (one entry per case:
 - **CASE-201..215** — full voice-command flow: auth + node registration, tool
   execution, validation, multi-tool, mixed server+client tools, MQTT publishes
   (settings / factory-reset / package-install: CASE-212/214/215), streaming audio.
+- **CASE-216..229** — negative-auth (bad/missing creds → 401), request-contract
+  (un-started conversation, malformed-body 400 envelope), and node-scope edges.
+- **CASE-230/231** — migrate-on-startup contract (`test_migrations_on_startup.py`):
+  every migrate-set service the `core` stack runs (auth + config-service +
+  command-center) must boot with its DB at alembic head (`alembic current` ==
+  `alembic heads`, asserted via `docker compose exec`), AND config-service's
+  open-read `GET /services` must return HTTP **200** — the exact endpoint the
+  2026-06 stale-schema outage 500'd while `/health` stayed green. A from-source
+  build that ships without running its migrations fails these.
 - **CASE-301/302/311/321** — T9 from-source lanes (one service built from PR
   source, the other two faked):
   - `301` real llm-proxy `/health` reaches the model service; `302` CC routes a
