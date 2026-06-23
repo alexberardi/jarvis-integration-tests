@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "case_count": 41,
+    "case_count": 44,
     "do_not_edit": "Run `python tools/gen_case_catalog.py --write`; CI drift-checks with --check.",
     "generated_by": "tools/gen_case_catalog.py",
     "lane_modes": {
@@ -276,6 +276,30 @@
       "mode": "fast",
       "repo": null,
       "test": "tests/test_cc_request_contracts.py::test_cc_returns_structured_400_envelope_on_malformed_body"
+    },
+    "CASE-227": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "CC GET settings-request for a DIFFERENT node than authenticated -> 403.",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_node_scope_contracts.py::test_cc_settings_request_get_rejects_other_node_with_403"
+    },
+    "CASE-228": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "CC GET our OWN node's settings-request for an unknown request_id -> 404.",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_node_scope_contracts.py::test_cc_settings_request_get_unknown_request_returns_404"
+    },
+    "CASE-229": {
+      "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
+      "intent": "CC PUT settings snapshot to a DIFFERENT node's request -> 403.",
+      "lane": "fast",
+      "mode": "fast",
+      "repo": null,
+      "test": "tests/test_cc_node_scope_contracts.py::test_cc_settings_snapshot_upload_rejects_other_node_with_403"
     },
     "CASE-301": {
       "gating": "always (both modes) when jarvis-llm-proxy-api builds from source",
