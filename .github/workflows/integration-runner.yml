@@ -40,7 +40,7 @@ on:
       plan_cases:
         description: "Comma-separated CASE-IDs from the QA plan"
         required: false
-        default: "CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201,CASE-202,CASE-203,CASE-204,CASE-205,CASE-206,CASE-207,CASE-208,CASE-209,CASE-210,CASE-211,CASE-212,CASE-213,CASE-214,CASE-215,CASE-216,CASE-217,CASE-218,CASE-219,CASE-220,CASE-221,CASE-222,CASE-223,CASE-224,CASE-225,CASE-226,CASE-227,CASE-228,CASE-229"
+        default: "CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201,CASE-202,CASE-203,CASE-204,CASE-205,CASE-206,CASE-207,CASE-208,CASE-209,CASE-210,CASE-211,CASE-212,CASE-213,CASE-214,CASE-215,CASE-216,CASE-217,CASE-218,CASE-219,CASE-220,CASE-221,CASE-222,CASE-223,CASE-224,CASE-225,CASE-226,CASE-227,CASE-228,CASE-229,CASE-230,CASE-231,CASE-232,CASE-233"
       linked_prs:
         description: "JSON map of {repo_name: branch_or_sha} for cross-service PR dependencies"
         required: false
@@ -89,7 +89,7 @@ jobs:
             LINKED_PRS='${{ inputs.linked_prs }}'
           fi
           if [[ -z "$PLAN_CASES" ]]; then
-            PLAN_CASES="CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201,CASE-202,CASE-203,CASE-204,CASE-205,CASE-206,CASE-207,CASE-208,CASE-209,CASE-210,CASE-211,CASE-212,CASE-213,CASE-214,CASE-215,CASE-216,CASE-217,CASE-218,CASE-219,CASE-220,CASE-221,CASE-222,CASE-223,CASE-224,CASE-225,CASE-226,CASE-227,CASE-228,CASE-229"
+            PLAN_CASES="CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201,CASE-202,CASE-203,CASE-204,CASE-205,CASE-206,CASE-207,CASE-208,CASE-209,CASE-210,CASE-211,CASE-212,CASE-213,CASE-214,CASE-215,CASE-216,CASE-217,CASE-218,CASE-219,CASE-220,CASE-221,CASE-222,CASE-223,CASE-224,CASE-225,CASE-226,CASE-227,CASE-228,CASE-229,CASE-230,CASE-231,CASE-232,CASE-233"
           fi
           if [[ -z "$LINKED_PRS" ]]; then
             LINKED_PRS="{}"
@@ -324,7 +324,7 @@ jobs:
           CC_USER_JWT: ${{ env.CC_USER_JWT }}
           MQTT_BROKER_URL: tcp://127.0.0.1:1883
         run: |
-          pytest tests/test_loop_smoke.py tests/test_cc_real_smoke.py tests/test_cc_auth_contracts.py tests/test_cc_request_contracts.py tests/test_cc_node_scope_contracts.py \
+          pytest tests/test_loop_smoke.py tests/test_cc_real_smoke.py tests/test_cc_auth_contracts.py tests/test_cc_request_contracts.py tests/test_cc_node_scope_contracts.py tests/test_config_service_registry_contracts.py \
             --junit-xml=results.xml \
             --tb=short \
             -v
