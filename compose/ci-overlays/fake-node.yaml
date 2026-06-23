@@ -1,0 +1,95 @@
+# compose/ci-overlays/fake-node.yaml
+#
+# P2 of the MOBILE e2e lane (prds/mobile-app-delivery.md Phase 2 → L2).
+#
+# Stands up the provisioning HTTP server the mobile app (jarvis-node-mobile)
+# drives during node onboarding — WITHOUT a real Pi or an AP-mode WiFi join.
+# It is the SAME byte-for-byte FastAPI app a real Pi Zero runs
+# (jarvis-node-setup/scripts/run_provisioning.py), backed by the in-repo
+# SimulatedWiFi driver (no hostapd/nmcli/root/radio). The mobile app reaches it
+# over normal LAN via its DEV_MODE "Simulator Mode" manual-IP path, exercising
+# the real provisioning protocol + state machine (GET /api/v1/info,
+# /scan-networks, POST /provision, /provision/k2, GET /status) — everything
+# except the native phone-side AP join, which no in-app e2e tool can automate.
+#
+# BUILT FROM SOURCE (not a published image): jarvis-node-setup publishes NO
+# ghcr.io :dev image — it's the Pi runtime + the harness's pytest client, and its
+# dev container builds from its Dockerfile. So this overlay builds it, the same
+# from-source pattern the six service overlays use. node-setup's Dockerfile pulls
+# jarvis-command-sdk via a NAMED build context (`COPY --from=jarvis-command-sdk`),
+# so a second checkout is wired in as a buildx additional context.
+#
+# The CI mobile-e2e workflow (P3) checks out both repos and exports:
+#   NODE_SETUP_SOURCE_PATH=./_src/jarvis-node-setup
+#   SDK_SOURCE_PATH=./_src/jarvis-command-sdk
+# then brings the fake node up on top of the core stack (so it can register with
+# the real command-center):
+#   docker compose -f docker-compose.ci.yaml -f compose/ci-overlays/fake-node.yaml \
+#       --profile core --profile mobile-e2e up -d --build --wait
+#
+# Local smoke (sources already on disk):
+#   NODE_SETUP_SOURCE_PATH=../jarvis-node-setup SDK_SOURCE_PATH=../jarvis-command-sdk \
+#     docker compose -f docker-compose.ci.yaml -f compose/ci-overlays/fake-node.yaml \
+#       --profile mobile-e2e up -d --build --wait jarvis-fake-node
+#
+# The iOS simulator / Android emulator runs on the runner HOST and reaches the
+# published :8080 below at localhost:8080 (iOS) / 10.0.2.2:8080 (Android).
+#
+# Networking caveat for the e2e (validate on real infra): the mobile app sends
+# its OWN command_center_url INTO the fake node's POST /provision, and the node
+# then registers with CC at that URL. For that single URL to be reachable from
+# BOTH the simulator (host) AND this container, seed the app's CC URL as the
+# HOST's LAN IP (e.g. http://<host-lan-ip>:7703), not localhost — localhost is
+# the host from the simulator but the container itself from in here.
+
+name: jarvis-ci
+
+services:
+  jarvis-fake-node:
+    # No published image exists — build node-setup from the checked-out source.
+    build:
+      context: ${NODE_SETUP_SOURCE_PATH:-./_src/jarvis-node-setup}
+      dockerfile: Dockerfile
+      # node-setup's Dockerfile does `COPY --from=jarvis-command-sdk` — supply it
+      # as a buildx additional context (second checkout in CI).
+      additional_contexts:
+        jarvis-command-sdk: ${SDK_SOURCE_PATH:-./_src/jarvis-command-sdk}
+      # Buildx GHA cache so warm CI runs collapse the cold build.
+      cache_from:
+        - type=gha
+      cache_to:
+        - type=gha,mode=max
+    profiles: ["mobile-e2e"]
+    # Override the default entrypoint (scripts/entrypoint.py → node runtime) with
+    # the provisioning server. SimulatedWiFi means no hostapd/nmcli/root; the
+    # captive-portal bind on :80 fails closed (try/except OSError) and is non-fatal.
+    command: ["python", "scripts/run_provisioning.py"]
+    environment:
+      JARVIS_SIMULATE_PROVISIONING: "true"
+      JARVIS_PROVISIONING_PORT: "8080"
+      # The SDK logger inside the provisioning app reads these; empty key is fine
+      # in sim mode (no app-to-app calls are made from the provisioning path).
+      JARVIS_APP_ID: jarvis-provisioning
+      JARVIS_APP_KEY: ci-provisioning-app-key
+      PYTHONUNBUFFERED: "1"
+    ports:
+      # Published so the host-side simulator/emulator can reach the provisioning
+      # API directly (the app's "Simulator Mode" IP:port points here).
+      - "8080:8080"
+    extra_hosts:
+      # Lets the node reach the host's published CC port if the app hands it a
+      # host.docker.internal CC URL; the host-LAN-IP approach (header above) is
+      # the portable default.
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      # node-setup images have no curl; use python's urllib against the real
+      # provisioning endpoint so "healthy" means the API actually answers.
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/v1/info', timeout=2)"
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 20s
