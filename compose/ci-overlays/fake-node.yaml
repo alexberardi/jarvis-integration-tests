@@ -67,6 +67,12 @@ services:
     environment:
       JARVIS_SIMULATE_PROVISIONING: "true"
       JARVIS_PROVISIONING_PORT: "8080"
+      # REQUIRED for the node to actually register with CC: _run_provisioning's
+      # first step is _update_config(), which returns False (-> state ERROR, no
+      # registration) when CONFIG_PATH is unset. A throwaway in-container path lets
+      # provisioning proceed to register_with_command_center(). (Validated 2026-06-23:
+      # without it the provision succeeds at the HTTP layer but never reaches CC.)
+      CONFIG_PATH: /tmp/node-config.json
       # The SDK logger inside the provisioning app reads these; empty key is fine
       # in sim mode (no app-to-app calls are made from the provisioning path).
       JARVIS_APP_ID: jarvis-provisioning
