@@ -22,9 +22,19 @@ decision, the networking + config-discovery constraints, and a shakeout checklis
 
 The two **wire-contract** tests are the durable win and run now — they pin the
 hand-mirrored TS ↔ Pydantic provisioning contract so a rename / required-ness flip
-on either side turns red instead of shipping silently to a Pi. The **CI lane** wires
-the actual sim run; it has not yet gone green end-to-end (needs a macOS runner +
-simulator + an EAS dev-client build) and is the work the checklist below covers.
+on either side turns red instead of shipping silently to a Pi.
+
+> **The provisioning flow is PROVEN (manual run, 2026-06-23).** The full Maestro
+> happy-path ran on an iOS simulator against a **live command-center** + the fake
+> node: the app fetched a provisioning token, drove `/info` → `/scan-networks` →
+> `/provision/k2` → `/provision`, the fake node **registered the node with CC**, and
+> it appeared **Online** in the app's CC-backed Nodes list. So the app, the Maestro
+> flow + selectors, the config-discovery injection, and the end-to-end provisioning
+> chain are all validated. What remains is purely **CI automation** — wrapping that
+> proven run in `mobile-e2e.yml` on a Docker-capable macOS environment (the runner
+> topology below), NOT app/flow correctness. The run was driven locally with: Metro
+> carrying the e2e env, the fake-node server (`run_provisioning.py` + `CONFIG_PATH`),
+> the app pointed at the host stack via the baked `MANUAL_CONFIG_URL`.
 
 ---
 
@@ -169,11 +179,15 @@ via CC (`tools/assert_node_online.py` → `GET /api/v0/admin/nodes`):
    above). For single-host colima the baked `http://localhost:7700` works as-is;
    confirm the app reaches config-service + fetches a provisioning token. For a
    split-host topology, rebuild with the LAN-IP value.
-4. **Maestro selectors** — confirm the two text-tap steps the flow marks `SHAKEOUT`
-   (the "Nodes" bottom-tab label, the "Add Node" FAB); add testIDs if flaky. The
-   provisioning-screen taps already use testIDs added in the node-mobile P3 PR.
-5. **node-online assertion** — confirm `registered` passes; decide whether `online`
-   is achievable (heartbeat) before flipping `--require-online`.
+4. **Maestro flow** — ✅ validated on a real device. The flow uses full-regex text
+   selectors (`"Nodes, tab.*"`, `"Add Node.*"`, `"Success.*"`), does NOT toggle the
+   DEV_MODE panel (open by default), and dismisses the keyboard with a neutral
+   `tapOn: {point}` before each button (`hideKeyboard` is unreliable on RN Paper).
+   The fake node needs `CONFIG_PATH` set (now in `fake-node.yaml`) or it never
+   registers with CC.
+5. **node-online assertion** — in the manual run the node showed **Online** in CC
+   right after registration, so `--require-online` looks achievable; still confirm
+   it holds in the unattended lane before flipping it on.
 6. **Stabilise → gate** — per the locked decision, run **advisory nightly** first;
    hard-gate the provisioning happy-path only after **3 consecutive stable runs**,
    then add Android (works on GitHub-hosted ubuntu via KVM). Keep the
