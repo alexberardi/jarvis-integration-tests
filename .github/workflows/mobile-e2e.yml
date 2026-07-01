@@ -202,9 +202,10 @@ jobs:
         env:
           CC_USER_JWT: ${{ env.CC_USER_JWT }}
           CC_HOUSEHOLD_ID: ${{ env.CC_HOUSEHOLD_ID }}
+          REQUIRE_ONLINE_INPUT: ${{ github.event.inputs.require_online || 'false' }}
         run: |
           REQUIRE_ONLINE=""
-          [[ "${{ github.event.inputs.require_online || 'false' }}" == "true" ]] && REQUIRE_ONLINE="--require-online"
+          [[ "$REQUIRE_ONLINE_INPUT" == "true" ]] && REQUIRE_ONLINE="--require-online"
           python tools/assert_node_online.py \
             --cc-url http://localhost:7703 --jwt "$CC_USER_JWT" \
             --household "$CC_HOUSEHOLD_ID" $REQUIRE_ONLINE --timeout 60

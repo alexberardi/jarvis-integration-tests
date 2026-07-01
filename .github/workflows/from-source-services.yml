@@ -64,18 +64,32 @@ jobs:
 
       - name: Resolve service matrix
         id: r
+        # Untrusted dispatch/input values go through env, never interpolated into
+        # the script body (else a crafted payload would execute as shell).
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          CP_SERVICE: ${{ github.event.client_payload.service }}
+          CP_SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
+          CP_HEAD_SHA: ${{ github.event.client_payload.head_sha }}
+          CP_SOURCE_REF: ${{ github.event.client_payload.source_ref }}
+          CP_PR_NUMBER: ${{ github.event.client_payload.pr_number }}
+          CP_ORIGINATING_REPO: ${{ github.event.client_payload.originating_repo }}
+          IN_SERVICE: ${{ inputs.service }}
+          IN_SOURCE_REPO: ${{ inputs.source_repo }}
+          IN_SOURCE_REF: ${{ inputs.source_ref }}
+          IN_PR_NUMBER: ${{ inputs.pr_number }}
         run: |
-          if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
-            SERVICE="${{ github.event.client_payload.service }}"
-            SOURCE_REPO="${{ github.event.client_payload.source_repo }}"
-            SOURCE_REF="${{ github.event.client_payload.head_sha || github.event.client_payload.source_ref }}"
-            PR_NUMBER="${{ github.event.client_payload.pr_number }}"
-            ORIGINATING_REPO="${{ github.event.client_payload.originating_repo }}"
+          if [[ "$EVENT_NAME" == "repository_dispatch" ]]; then
+            SERVICE="$CP_SERVICE"
+            SOURCE_REPO="$CP_SOURCE_REPO"
+            SOURCE_REF="${CP_HEAD_SHA:-$CP_SOURCE_REF}"
+            PR_NUMBER="$CP_PR_NUMBER"
+            ORIGINATING_REPO="$CP_ORIGINATING_REPO"
           else
-            SERVICE="${{ inputs.service }}"
-            SOURCE_REPO="${{ inputs.source_repo }}"
-            SOURCE_REF="${{ inputs.source_ref }}"
-            PR_NUMBER="${{ inputs.pr_number }}"
+            SERVICE="$IN_SERVICE"
+            SOURCE_REPO="$IN_SOURCE_REPO"
+            SOURCE_REF="$IN_SOURCE_REF"
+            PR_NUMBER="$IN_PR_NUMBER"
             ORIGINATING_REPO=""
           fi
           [[ -z "$SOURCE_REPO" ]] && SOURCE_REPO="alexberardi/${SERVICE}"

