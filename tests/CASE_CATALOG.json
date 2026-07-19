@@ -263,11 +263,11 @@
     },
     "CASE-225": {
       "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",
-      "intent": "CC /voice/command (blocking) on a never-started conversation -> 200 with a",
+      "intent": "CC /voice/command (blocking) on a never-started conversation -> HTTP 422.",
       "lane": "fast",
       "mode": "fast",
       "repo": null,
-      "test": "tests/test_cc_request_contracts.py::test_cc_voice_command_unstarted_conversation_returns_200_command_error"
+      "test": "tests/test_cc_request_contracts.py::test_cc_voice_command_unstarted_conversation_returns_422"
     },
     "CASE-226": {
       "gating": "fast lane (integration-runner suite); not selected by the cross-repo resolver",

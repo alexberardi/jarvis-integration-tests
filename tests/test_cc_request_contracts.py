@@ -105,19 +105,20 @@ def test_cc_voice_stream_rejects_unstarted_conversation_with_400():
 @pytest.mark.skipif(not CC_URL, reason=SKIP_REASON)
 @pytest.mark.skipif(not (CC_NODE_ID and CC_NODE_KEY), reason=SKIP_NO_NODE)
 @pytest.mark.qa_case("CASE-225")
-def test_cc_voice_command_unstarted_conversation_returns_200_command_error():
-    """CC /voice/command (blocking) on a never-started conversation -> 200 with a
-    per-command error (NOT an HTTP 400).
+def test_cc_voice_command_unstarted_conversation_returns_422():
+    """CC /voice/command (blocking) on a never-started conversation -> HTTP 422.
 
-    The blocking `/voice/command` endpoint is batch-style: it returns HTTP 200 and
-    reports per-command outcomes in the body
-    (`{"commands":[{"success":false,"errors":{...}}]}`). This DIFFERS from its
-    streaming twin `/voice/command/stream` (CASE-224), which propagates an HTTP 400
-    for the same precondition. This case pins the blocking endpoint's actual failure
-    contract — nothing else covers it — and documents the deliberate divergence
-    between the two handlers. The precondition still fires: a never-started
-    conversation surfaces as commands[0].success == False with a "Conversation not
-    initialized for tool-based flow" message.
+    Contract updated 2026-07-18 for jarvis-command-center d113c6d ("surface
+    blocking-endpoint precondition failures as 422", per the QA plan on
+    jarvis-roadmap#51): whole-request precondition failures now propagate as an
+    HTTP 422 with FastAPI's `{"detail": ...}` shape instead of being swallowed
+    into the 200 batch envelope. The historical contract (200 +
+    `commands[0].success == False`) is retired; per-command errors in the 200
+    body remain the shape for failures of individual commands *within* a
+    started conversation. The streaming twin still returns 400 for the same
+    precondition (CASE-224) — the divergence is now 422-vs-400 rather than
+    200-vs-400. Node impact verified: the node's RestClient raise_for_status()
+    treats any 4xx identically (log + None + retry via /conversation/start).
     """
     resp = httpx.post(
         f"{CC_URL}/api/v0/voice/command",
@@ -128,18 +129,14 @@ def test_cc_voice_command_unstarted_conversation_returns_200_command_error():
         },
         timeout=15.0,
     )
-    assert resp.status_code == 200, (
-        f"expected 200 — the blocking endpoint is batch-style (per-command results "
-        f"in the body) — got {resp.status_code} body={resp.text[:300]}"
+    assert resp.status_code == 422, (
+        f"expected 422 for a whole-request precondition failure (CC d113c6d) — "
+        f"got {resp.status_code} body={resp.text[:300]}"
     )
-    cmd = resp.json()["commands"][0]
-    assert cmd["success"] is False, (
-        f"expected commands[0].success == False for an un-started conversation, got "
-        f"{cmd} — the precondition guard may be failing open."
-    )
-    assert "not initialized" in (cmd.get("errors", {}).get("message", "") or "").lower(), (
+    detail = resp.json().get("detail", "")
+    assert "not initialized" in str(detail).lower(), (
         f"expected the 'Conversation not initialized' precondition detail, got "
-        f"command={cmd}"
+        f"detail={detail!r}"
     )
 
 
