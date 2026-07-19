@@ -1,0 +1,79 @@
+# compose/ci-overlays/jarvis-phone-gateway-from-source.yaml
+#
+# FROM-SOURCE overlay for a jarvis-phone-gateway PR. Brings up the REAL
+# gateway built from the PR's checked-out source and asserts it boots and
+# reports healthy inside the composed stack.
+#
+# Directional note (this overlay is deliberately INVERTED vs the llm-proxy/
+# whisper/tts overlays): those services are upstream deps CC calls, so their
+# overlays repoint command-center at the real container. The phone gateway is
+# a DOWNSTREAM CONSUMER — it calls CC / whisper / llm-proxy / tts and is never
+# called by CC over static discovery (CC reaches call workers only via the
+# per-session worker_url written at claim time). So there is NO
+# jarvis-command-center environment override here.
+#
+# Twilio creds are intentionally EMPTY: the gateway is designed to boot
+# without them (signature_validation=false in /health) and its media WS still
+# fails closed at the single-use session-token gate. The real Twilio media
+# path (public wss + live account) is out of CI's reach by design — this lane
+# proves packaging + boot + wiring (the P0 spike's 0-second-call bug was
+# exactly a packaging failure: bare uvicorn without wsproto).
+#
+# Brought up by .github/workflows/from-source-services.yml with:
+#   docker compose -f docker-compose.ci.yaml \
+#       -f compose/ci-overlays/jarvis-phone-gateway-from-source.yaml \
+#       --profile core --profile from-source up -d --wait jarvis-phone-gateway
+
+name: jarvis-ci
+
+services:
+  jarvis-phone-gateway:
+    profiles: ["from-source"]
+    build:
+      context: ${PHONE_GATEWAY_SOURCE_PATH:-./_src/jarvis-phone-gateway}
+      # Plain Dockerfile (CPU-only service — no CUDA variant exists).
+      dockerfile: Dockerfile
+      cache_from:
+        - type=gha
+      cache_to:
+        - type=gha,mode=max
+    environment:
+      # Downstream targets on the compose network / host fakes. Env names are
+      # the gateway's real config surface (config.py), not the registry's
+      # compose-time names. None of these are dialed at boot; they position
+      # the container for the live-wiring lane that follows P1.
+      CC_BASE_URL: http://jarvis-command-center:8002
+      LLM_URL: http://host.docker.internal:7705
+      WHISPER_URL: http://host.docker.internal:7706
+      TTS_URL: http://host.docker.internal:7707
+      # No Redis in the CI stack. The dial-queue consumer is a library, not a
+      # startup loop — the URL is stored, never connected at boot.
+      REDIS_URL: redis://host.docker.internal:6379/0
+      # Empty Twilio creds -> signature_validation=false in /health; the
+      # media WS endpoint still rejects unknown session tokens (fail closed).
+      TWILIO_ACCOUNT_SID: ""
+      TWILIO_AUTH_TOKEN: ""
+      TWILIO_FROM_NUMBER: ""
+      PUBLIC_URL: ""
+      JARVIS_APP_ID: phone-gateway
+      JARVIS_APP_KEY: ""
+      PYTHONUNBUFFERED: "1"
+    ports:
+      # Exposed so the test client (and a failed-run debugger) can hit the
+      # gateway directly.
+      - "7713:7713"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      # python:3.11-slim has no curl; stdlib urllib is always present.
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:7713/health', timeout=3).status==200 else 1)",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 15s
