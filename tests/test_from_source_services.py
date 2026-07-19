@@ -17,6 +17,8 @@ runs, the behavior lane):
     LLM_PROXY_URL          -> CASE-304  (real proxy /v1/chat REJECTS missing app headers)
     TTS_FROM_SOURCE        -> CASE-311  (CC -> real Piper TTS, real audio)
     WHISPER_FROM_SOURCE    -> CASE-321  (CC -> real whisper, real transcribe)
+    PHONE_GATEWAY_URL      -> CASE-331  (real gateway /health, no Twilio creds)
+    PHONE_GATEWAY_URL      -> CASE-332  (media WS upgrade handled + fails closed)
 
 Note on the llm-proxy lane: it validates the proxy's OWN contract directly, not
 CC -> proxy routing. CC's voice flow sends response_format=json_object, which the
@@ -58,6 +60,7 @@ LLM_PROXY_APP_ID = os.environ.get("LLM_PROXY_APP_ID", "command-center")
 LLM_PROXY_APP_KEY = os.environ.get("LLM_PROXY_APP_KEY", "")
 TTS_FROM_SOURCE = os.environ.get("TTS_FROM_SOURCE", "")
 WHISPER_FROM_SOURCE = os.environ.get("WHISPER_FROM_SOURCE", "")
+PHONE_GATEWAY_URL = os.environ.get("PHONE_GATEWAY_URL", "")
 
 SKIP_NO_STACK = "CC_URL unset — real-stack from-source cases skipped"
 SKIP_NO_NODE = "CC_NODE_ID / CC_NODE_KEY unset — node seed did not run"
@@ -347,4 +350,84 @@ def test_cc_media_transcribe_through_real_whisper_returns_contract():
     )
     assert "speaker" in body, (
         f"expected a `speaker` field in the response, got body={body}"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# CASE-331 — real phone-gateway boots and reports healthy without Twilio creds.
+# --------------------------------------------------------------------------- #
+@pytest.mark.skipif(
+    not PHONE_GATEWAY_URL,
+    reason="PHONE_GATEWAY_URL unset — phone-gateway not built from source",
+)
+@pytest.mark.qa_case("CASE-331")
+def test_real_phone_gateway_health_without_twilio():
+    """GET /health on the from-source gateway.
+
+    The lane runs with EMPTY Twilio creds on purpose: the gateway must boot
+    and serve /health in a bare environment (signature_validation reports
+    false, and the media WS still fails closed at the session-token gate —
+    CASE-332). Asserting the exact body pins the gateway's own health
+    contract, which differs from llm-proxy's `status: healthy` shape.
+    """
+    resp = httpx.get(f"{PHONE_GATEWAY_URL.rstrip('/')}/health", timeout=15.0)
+    assert resp.status_code == 200, (
+        f"expected 200, got {resp.status_code} body={resp.text[:300]}"
+    )
+    body = resp.json()
+    assert body.get("status") == "ok", f"expected status=ok, got {body}"
+    assert body.get("service") == "jarvis-phone-gateway", (
+        f"expected service=jarvis-phone-gateway, got {body}"
+    )
+    assert body.get("active_calls") == 0, f"expected 0 active calls, got {body}"
+    assert body.get("signature_validation") is False, (
+        f"no Twilio token in this lane -> signature_validation must be false, "
+        f"got {body}"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# CASE-332 — the media-stream WS upgrade is HANDLED and fails closed.
+# --------------------------------------------------------------------------- #
+@pytest.mark.skipif(
+    not PHONE_GATEWAY_URL,
+    reason="PHONE_GATEWAY_URL unset — phone-gateway not built from source",
+)
+@pytest.mark.qa_case("CASE-332")
+def test_media_ws_upgrade_handled_and_fails_closed():
+    """A WS handshake with an unknown session token must be REJECTED with 403,
+    not 404.
+
+    This pins the P0 spike's packaging failure ladder item 1: bare uvicorn has
+    no WebSocket protocol lib, so the upgrade fell through to HTTP routing and
+    404'd — every call was 0 seconds. 403 proves two things at once through
+    the real container: wsproto is present (the upgrade reached the endpoint),
+    and the single-use session-token gate rejects unknown tokens BEFORE
+    accepting the stream (fail-closed, verified against the real image).
+
+    A plain GET (no upgrade headers) on the same path is expected to 404 —
+    that's HTTP routing, not the WS stack, and is asserted as the contrast so
+    a future route change can't silently invert the probe's meaning.
+    """
+    base = PHONE_GATEWAY_URL.rstrip("/")
+    upgrade_headers = {
+        "Connection": "Upgrade",
+        "Upgrade": "websocket",
+        "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+        "Sec-WebSocket-Version": "13",
+    }
+    resp = httpx.get(
+        f"{base}/media/bogus-token", headers=upgrade_headers, timeout=15.0
+    )
+    assert resp.status_code == 403, (
+        f"expected 403 (WS upgrade handled, token rejected before accept); "
+        f"404 here means the WebSocket protocol lib is missing from the image "
+        f"(the P0 0-second-call bug). got {resp.status_code} "
+        f"body={resp.text[:200]}"
+    )
+
+    plain = httpx.get(f"{base}/media/bogus-token", timeout=15.0)
+    assert plain.status_code == 404, (
+        f"contrast probe: plain GET should 404 (no WS route in HTTP routing), "
+        f"got {plain.status_code}"
     )

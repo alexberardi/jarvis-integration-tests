@@ -26,7 +26,7 @@ on:
   workflow_dispatch:
     inputs:
       service:
-        description: "Service under test (jarvis-llm-proxy-api | jarvis-whisper-api | jarvis-tts)"
+        description: "Service under test (jarvis-llm-proxy-api | jarvis-whisper-api | jarvis-tts | jarvis-phone-gateway)"
         required: true
       source_repo:
         description: "owner/name to build from (default: alexberardi/<service>)"
@@ -122,8 +122,19 @@ jobs:
               TEST_ENV="TTS_FROM_SOURCE=1"
               SRC_VAR="TTS_SOURCE_PATH"
               ;;
+            jarvis-phone-gateway)
+              # Downstream consumer of CC/llm/whisper/tts — every fake stays
+              # up (they're CC's deps, and the gateway's future turn targets).
+              # No SEED_ENV: nothing discovers the gateway via config-service;
+              # CC reaches call workers only via per-session worker URLs.
+              START_FAKE_LLM=true;   START_FAKE_WHISPER=true;  START_FAKE_TTS=true
+              UP_SERVICES="jarvis-phone-gateway"
+              SEED_ENV=""
+              TEST_ENV="PHONE_GATEWAY_URL=http://localhost:7713"
+              SRC_VAR="PHONE_GATEWAY_SOURCE_PATH"
+              ;;
             *)
-              echo "::error::Unknown service '$SERVICE' (expected jarvis-llm-proxy-api | jarvis-whisper-api | jarvis-tts)"
+              echo "::error::Unknown service '$SERVICE' (expected jarvis-llm-proxy-api | jarvis-whisper-api | jarvis-tts | jarvis-phone-gateway)"
               exit 1
               ;;
           esac
@@ -288,9 +299,10 @@ jobs:
           # plan-cases is the lane's case for this service; parse_junit reports
           # any missing one as not-implemented.
           case "${{ steps.r.outputs.service }}" in
-            jarvis-llm-proxy-api) PLAN="CASE-301,CASE-302,CASE-303,CASE-304" ;;
-            jarvis-whisper-api)   PLAN="CASE-321" ;;
-            jarvis-tts)           PLAN="CASE-311" ;;
+            jarvis-llm-proxy-api)  PLAN="CASE-301,CASE-302,CASE-303,CASE-304" ;;
+            jarvis-whisper-api)    PLAN="CASE-321" ;;
+            jarvis-tts)            PLAN="CASE-311" ;;
+            jarvis-phone-gateway)  PLAN="CASE-331,CASE-332" ;;
           esac
           python tools/parse_junit.py results.xml \
             --plan-cases "$PLAN" --run-url "$RUN_URL" --output results.json
