@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "case_count": 46,
+    "case_count": 48,
     "do_not_edit": "Run `python tools/gen_case_catalog.py --write`; CI drift-checks with --check.",
     "generated_by": "tools/gen_case_catalog.py",
     "lane_modes": {
@@ -364,6 +364,22 @@
       "mode": "always",
       "repo": "jarvis-whisper-api",
       "test": "tests/test_from_source_services.py::test_cc_media_transcribe_through_real_whisper_returns_contract"
+    },
+    "CASE-331": {
+      "gating": "always (both modes) when jarvis-phone-gateway builds from source",
+      "intent": "GET /health on the from-source gateway.",
+      "lane": "cross-repo",
+      "mode": "always",
+      "repo": "jarvis-phone-gateway",
+      "test": "tests/test_from_source_services.py::test_real_phone_gateway_health_without_twilio"
+    },
+    "CASE-332": {
+      "gating": "always (both modes) when jarvis-phone-gateway builds from source",
+      "intent": "A WS handshake with an unknown session token must be REJECTED with 403,",
+      "lane": "cross-repo",
+      "mode": "always",
+      "repo": "jarvis-phone-gateway",
+      "test": "tests/test_from_source_services.py::test_media_ws_upgrade_handled_and_fails_closed"
     },
     "CASE-401": {
       "gating": "cross-repo composition signal — runs when >=2 from-source services build together",

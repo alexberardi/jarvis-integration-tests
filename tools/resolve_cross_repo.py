@@ -105,6 +105,18 @@ KNOWN: dict[str, dict] = {
         test="CROSS_REPO_TTS=1 TTS_FROM_SOURCE=1",
         always_cases=["CASE-311"], composition_cases=[],
     ),
+    "jarvis-phone-gateway": dict(
+        overlay="jarvis-phone-gateway-from-source.yaml", phase="add",
+        up=["jarvis-phone-gateway"],
+        # Downstream CONSUMER of CC/config/auth — replaces no host fake and
+        # needs no CC seed repoint (the inverse of the llm/whisper/tts lanes).
+        fake=None, seed="",
+        test="PHONE_GATEWAY_URL=http://localhost:7713",
+        # 331 = /health body with no Twilio creds; 332 = media-WS upgrade
+        # handled + fails closed on a bogus session token (403, not 404).
+        # Neither touches the LLM backend -> both always.
+        always_cases=["CASE-331", "CASE-332"], composition_cases=[],
+    ),
 }
 
 # Canonical bring-up order: deps first, then CC, then add-containers. Keeps the
